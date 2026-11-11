@@ -21,6 +21,7 @@ export const ONECLICK_FEE_RULES =
   "No partner key: 1Click charges 0.25% (25 bps). With a partner JWT: 0.20% (20 bps). appFees are split 50/50, and 1Click keeps at least 20 bps.";
 
 export function configuredAppFees(env: NodeJS.ProcessEnv = process.env): AppFee[] {
+  if (!env.ONECLICK_JWT?.trim()) return [];
   const recipient = (env.ONECLICK_APP_FEE_RECIPIENT || "").trim();
   const raw = Number(env.ONECLICK_APP_FEE_BPS ?? "0");
   if (!recipient || !Number.isFinite(raw) || raw <= 0) return [];

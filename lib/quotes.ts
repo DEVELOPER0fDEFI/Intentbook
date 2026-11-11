@@ -38,7 +38,7 @@ function oneclickHeaders(): Record<string, string> {
 
 export async function getTokens(force = false): Promise<TokenRow[]> {
   if (!force && tokenCache && Date.now() - tokenCache.at < 20_000) return tokenCache.rows;
-  const res = await fetch(`${oneclickBase()}/v0/tokens`, { signal: AbortSignal.timeout(15000) });
+  const res = await fetch(`${oneclickBase()}/v0/tokens`, { headers: oneclickHeaders(), signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`1Click tokens failed (${res.status})`);
   const rows = (await res.json()) as TokenRow[];
   if (!Array.isArray(rows)) throw new Error("1Click tokens response was not a list");
@@ -122,8 +122,10 @@ export interface QuoteRequest {
 }
 
 export async function oneclickQuote(request: QuoteRequest): Promise<unknown> {
-  const appFees = request.appFees ?? configuredAppFees();
-  const body = appFees.length > 0 ? { ...request, appFees } : request;
+  const { appFees: requestedFees, ...rest } = request;
+  const jwtSet = Boolean(process.env.ONECLICK_JWT?.trim());
+  const appFees = jwtSet ? (requestedFees ?? configuredAppFees()) : [];
+  const body = appFees.length > 0 ? { ...rest, appFees } : rest;
   const res = await fetch(`${oneclickBase()}/v0/quote`, {
     method: "POST",
     headers: oneclickHeaders(),
@@ -252,7 +254,7 @@ export { activeFeeSchedule, configuredAppFees };
 export async function depositStatus(depositAddress: string): Promise<unknown> {
   const url = new URL(`${oneclickBase()}/v0/status`);
   url.searchParams.set("depositAddress", depositAddress);
-  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  const res = await fetch(url, { headers: oneclickHeaders(), signal: AbortSignal.timeout(15000) });
   const text = await res.text();
   try {
     return JSON.parse(text);

@@ -129,8 +129,8 @@ Pairs: `BTC-USDC`, `ETH-USDC`, `SOL-USDC`, `NEAR-USDC`. Asset ids are loaded fro
 | `NEAR_RELAYER_PRIVATE_KEY` | Live only | `ed25519:` secret for that account. Never commit it. |
 | `INTENTBOOK_EXECUTE_GAS` | No | Default `300000000000000` (300 TGas). |
 | `ONECLICK_JWT` | No | Partner JWT from https://partners.near-intents.org. Without it, 1Click charges 0.25% (25 bps). With it, 1Click charges 0.20% (20 bps). |
-| `ONECLICK_APP_FEE_BPS` | No | Extra app fee in basis points on 1Click quotes. Split 50/50, and 1Click keeps at least 20 bps. |
-| `ONECLICK_APP_FEE_RECIPIENT` | No | Intents account that receives the app fee. Required for the fee to be attached. |
+| `ONECLICK_APP_FEE_BPS` | No | Extra app fee in basis points. Attached only when `ONECLICK_JWT` is set. Split 50/50, and 1Click keeps at least 20 bps. |
+| `ONECLICK_APP_FEE_RECIPIENT` | No | Intents account that receives the app fee. Also required before the fee is attached. |
 | `REFERRER_SHARE_BPS` | No | Share of the taker fee credited to an embed referrer. Default 5000 (50%). |
 | `INTENTBOOK_WS_PORT` | No | WebSocket port. Default 43124. Set `INTENTBOOK_WS=0` to disable it. |
 | `INTENTBOOK_NONCE` | No | Set to `legacy` to force the old 4-byte salt nonce. Default is the versioned `5628f6c6` nonce. |

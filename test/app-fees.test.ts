@@ -16,11 +16,20 @@ test("1Click fees follow the published split", () => {
   assert.match(partner.rules, /at least 20 bps/);
 });
 
-test("app fee config is empty until recipient and bps are set", () => {
+test("app fees are omitted unless the partner JWT is set", () => {
   assert.deepEqual(configuredAppFees({} as NodeJS.ProcessEnv), []);
-  assert.deepEqual(configuredAppFees({ ONECLICK_APP_FEE_BPS: "15", ONECLICK_APP_FEE_RECIPIENT: "fees.near" } as unknown as NodeJS.ProcessEnv), [
-    { recipient: "fees.near", fee: 15 },
-  ]);
+  assert.deepEqual(
+    configuredAppFees({ ONECLICK_APP_FEE_BPS: "15", ONECLICK_APP_FEE_RECIPIENT: "fees.near" } as unknown as NodeJS.ProcessEnv),
+    [],
+  );
+  assert.deepEqual(
+    configuredAppFees({
+      ONECLICK_JWT: "present",
+      ONECLICK_APP_FEE_BPS: "15",
+      ONECLICK_APP_FEE_RECIPIENT: "fees.near",
+    } as unknown as NodeJS.ProcessEnv),
+    [{ recipient: "fees.near", fee: 15 }],
+  );
 });
 
 test("book walk adds the taker fee and reports savings against 1Click", () => {
