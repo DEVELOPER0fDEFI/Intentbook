@@ -260,6 +260,7 @@ function stepCopy(index: number, quoted: boolean, balances: boolean) {
 
 function WithdrawForm({ account }: { account: string }) {
   const wallet = useWallet();
+  const [chain, setChain] = useState<"near" | "base">("near");
   const [tokenId, setTokenId] = useState("nep141:wrap.near");
   const [receiverId, setReceiverId] = useState("");
   const [amount, setAmount] = useState("1000000000000000000000000");
@@ -274,10 +275,22 @@ function WithdrawForm({ account }: { account: string }) {
       const previewRes = await fetch("/api/v1/withdraw/preview", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ account, tokenId, receiverId: receiverId || account, amount, chain: "near" }),
+        body: JSON.stringify({
+          account,
+          tokenId: chain === "base" ? "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1" : tokenId,
+          receiverId: receiverId || account,
+          amount: chain === "base" ? String(Math.round(Number(amount) * 1_000_000)) : amount,
+          chain: chain === "base" ? "other" : "near",
+          destinationAsset: "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near",
+          dry: true,
+        }),
       });
       const preview = await previewRes.json();
       if (!previewRes.ok) throw new Error(preview.error || "Could not prepare the withdrawal");
+      if (chain === "base") {
+        setResult(preview);
+        return;
+      }
       const signed = await wallet.signLeg(preview);
       const res = await fetch("/api/v1/withdraw", {
         method: "POST",
@@ -296,8 +309,31 @@ function WithdrawForm({ account }: { account: string }) {
     <form onSubmit={onSubmit} className="rounded-lg border border-line bg-panel p-4">
       <h2 className="text-sm">Withdraw to your own address</h2>
       <p className="mt-1 text-xs text-muted">
-        ft_withdraw uses the token contract id without the nep141 prefix. Dry-run simulates and does not broadcast.
+        NEAR uses ft_withdraw and stops at simulation in dry-run. Base asks 1Click for a dry quote from Intents USDC. Neither path is broadcast by the server.
       </p>
+      <div className="mt-3 flex gap-2">
+        <Button
+          type="button"
+          variant={chain === "near" ? "bid" : "outline"}
+          onClick={() => {
+            setChain("near");
+            setAmount("1000000000000000000000000");
+            setTokenId("nep141:wrap.near");
+          }}
+        >
+          NEAR
+        </Button>
+        <Button
+          type="button"
+          variant={chain === "base" ? "bid" : "outline"}
+          onClick={() => {
+            setChain("base");
+            setAmount("20");
+          }}
+        >
+          Base
+        </Button>
+      </div>
       <label className="mt-3 block text-xs text-muted" htmlFor="withdraw-token">
         Token id
       </label>
@@ -307,11 +343,11 @@ function WithdrawForm({ account }: { account: string }) {
       </label>
       <Input id="withdraw-to" className="mt-1" value={receiverId} placeholder={account || "alice.near"} onChange={(event) => setReceiverId(event.target.value)} />
       <label className="mt-3 block text-xs text-muted" htmlFor="withdraw-amount">
-        Amount in atoms
+        {chain === "base" ? "USDC amount" : "Amount in atoms"}
       </label>
       <Input id="withdraw-amount" className="mt-1 nums" value={amount} onChange={(event) => setAmount(event.target.value)} />
       <Button className="mt-3" type="submit" variant="outline">
-        Sign and simulate withdraw
+        {chain === "base" ? "Quote Base withdrawal" : "Sign and simulate withdraw"}
       </Button>
       {error ? <p className="mt-3 text-sm text-ask">{error}</p> : null}
       {result ? <pre className="nums mt-3 max-h-48 overflow-auto text-xs">{JSON.stringify(result, null, 2)}</pre> : null}
