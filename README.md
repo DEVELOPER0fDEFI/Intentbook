@@ -66,11 +66,30 @@ The maker quotes around the reference mid. A crossing order is signed at the mak
 
 Orders, fills, and cancelled nonces are stored in SQLite (`SQLITE_PATH`, default `.data/intentbook.sqlite`). Maker quotes stay in memory and are rebuilt from prices.
 
+## Public API
+
+Versioned under `/api/v1`. The machine-readable description is `/openapi.json`. A small client lives in `packages/sdk`.
+
+Reads: book, grouped depth, candles (`1m`, `5m`, `1h`, `1d`), trades, ticker, account orders/fills/balances, compare, and best quote across the book, 1Click, and Rhea.
+
+Writes: preview, place signed order, signed cancel, webhook registration. Webhooks send `X-IntentBook-Signature` as hex HMAC-SHA256 of the body. Failures retry at 1s, 5s, 30s, 2m, and 10m, then stop. SSE is `GET /api/v1/stream?pair=BTC-USDC`. WebSocket is `ws://127.0.0.1:43124?pair=BTC-USDC`.
+
+Embed with:
+
+```html
+<script src="http://127.0.0.1:43123/widget.js" data-referrer="your-app" data-origin="http://127.0.0.1:43123"></script>
+```
+
+The referrer id is stored with each fill and earns `REFERRER_SHARE_BPS` of the taker fee. `GET /api/v1/referrers?id=your-app` returns the total.
+
 ## Wallets
 
 - **Demo key**: an ed25519 key in `localStorage`. This is the fallback for judges. It is not funded.
-- **NEAR wallet selector**: Meteor, HOT, MyNearWallet, and HERE. Named accounts sign NEP-413. Implicit accounts match the public key. A named account must have called `add_public_key` on `intents.near` before a live execution can succeed.
-- **MetaMask**: ERC-191 `personal_sign` of the intent payload. The recovery byte is normalized to 0 or 1, which is what the Verifier expects. `signer_id` is the Ethereum address.
+- **NEAR wallet selector**: Meteor, HOT, MyNearWallet, and HERE. The selector restores a previous session after refresh. Named accounts sign NEP-413. **Register key** checks `has_public_key` and asks the wallet to call `add_public_key`. The server does not send that transaction.
+- **MetaMask**: ERC-191 `personal_sign`. A previous connection is restored with `eth_accounts` and no popup.
+- **Phantom**: raw ed25519 over the intent payload. `signer_id` is the hex public key.
+- **Passkey**: sign in without a wallet. The browser creates a WebAuthn credential and later assertions are wrapped as `webauthn` payloads.
+- Nonces default to the versioned form: magic `5628f6c6`, version 1, the 4-byte salt, the deadline in nanoseconds, then 15 random bytes. If `simulate_intents` rejects that nonce, the next order uses the legacy salt prefix.
 
 ## Deposits and withdrawals
 
@@ -109,7 +128,12 @@ Pairs: `BTC-USDC`, `ETH-USDC`, `SOL-USDC`, `NEAR-USDC`. Asset ids are loaded fro
 | `NEAR_RELAYER_ACCOUNT` | Live only | Account that pays gas for `execute_intents`. |
 | `NEAR_RELAYER_PRIVATE_KEY` | Live only | `ed25519:` secret for that account. Never commit it. |
 | `INTENTBOOK_EXECUTE_GAS` | No | Default `300000000000000` (300 TGas). |
-| `ONECLICK_JWT` | No | Partner JWT from https://partners.near-intents.org. Without it, 1Click adds its public fee. |
+| `ONECLICK_JWT` | No | Partner JWT from https://partners.near-intents.org. Without it, 1Click charges 0.25% (25 bps). With it, 1Click charges 0.20% (20 bps). |
+| `ONECLICK_APP_FEE_BPS` | No | Extra app fee in basis points on 1Click quotes. Split 50/50, and 1Click keeps at least 20 bps. |
+| `ONECLICK_APP_FEE_RECIPIENT` | No | Intents account that receives the app fee. Required for the fee to be attached. |
+| `REFERRER_SHARE_BPS` | No | Share of the taker fee credited to an embed referrer. Default 5000 (50%). |
+| `INTENTBOOK_WS_PORT` | No | WebSocket port. Default 43124. Set `INTENTBOOK_WS=0` to disable it. |
+| `INTENTBOOK_NONCE` | No | Set to `legacy` to force the old 4-byte salt nonce. Default is the versioned `5628f6c6` nonce. |
 | `NEAR_RPC_URL` | No | Defaults to `https://rpc.mainnet.near.org`, then `https://rpc.fastnear.com`. |
 | `INTENTS_CONTRACT` | No | Defaults to `intents.near`. |
 | `ONECLICK_BASE` | No | Defaults to `https://1click.chaindefuser.com`. |

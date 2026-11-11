@@ -13,7 +13,7 @@ interface SignLeg {
   standard: SignStandard;
 }
 
-export type WalletKind = "demo" | "near" | "evm";
+export type WalletKind = "demo" | "near" | "evm" | "solana" | "passkey";
 
 export interface WalletSession {
   kind: WalletKind;
@@ -27,6 +27,9 @@ interface WalletApi {
   error: string;
   connectNear: () => Promise<void>;
   connectEvm: () => Promise<void>;
+  connectSolana: () => Promise<void>;
+  connectPasskey: () => Promise<void>;
+  registerNearKey: () => Promise<void>;
   useDemo: () => void;
   signLeg: (leg: SignLeg) => Promise<SignedIntent>;
   nearDeposit: (call: { receiverId: string; methodName: string; args: Record<string, string>; gas: string; deposit: string }) => Promise<string>;
@@ -57,16 +60,50 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const demo = loadDemoKey();
-    const saved = window.sessionStorage.getItem(STORAGE);
-    if (saved) {
-      try {
-        setSession(JSON.parse(saved) as WalletSession);
-        return;
-      } catch {
-        window.sessionStorage.removeItem(STORAGE);
+    void (async () => {
+      const savedRaw = window.sessionStorage.getItem(STORAGE);
+      const saved = savedRaw ? (JSON.parse(savedRaw) as WalletSession) : null;
+      const ethereum = (window as unknown as { ethereum?: { request: (args: { method: string }) => Promise<string[]> } }).ethereum;
+      if (ethereum && (!saved || saved.kind === "evm")) {
+        try {
+          const accounts = await ethereum.request({ method: "eth_accounts" });
+          if (accounts[0]) {
+            remember({ kind: "evm", accountId: accounts[0] });
+            return;
+          }
+        } catch {
+          // MetaMask is not connected.
+        }
       }
-    }
-    setSession({ kind: "demo", accountId: demo.accountId });
+      if (!saved || saved.kind === "near") {
+        try {
+          const [{ setupWalletSelector }, { setupMeteorWallet }, { setupHotWallet }, { setupMyNearWallet }, { setupHereWallet }] = await Promise.all([
+            import("@near-wallet-selector/core"),
+            import("@near-wallet-selector/meteor-wallet"),
+            import("@near-wallet-selector/hot-wallet"),
+            import("@near-wallet-selector/my-near-wallet"),
+            import("@near-wallet-selector/here-wallet"),
+          ]);
+          const selector = await setupWalletSelector({
+            network: "mainnet",
+            modules: [setupMeteorWallet(), setupHotWallet(), setupMyNearWallet(), setupHereWallet()],
+          });
+          const accounts = selector.store.getState().accounts;
+          if (accounts[0]) {
+            nearWallet = (await selector.wallet()) as NearWallet;
+            remember({ kind: "near", accountId: accounts[0].accountId, publicKey: accounts[0].publicKey });
+            return;
+          }
+        } catch {
+          // No NEAR session to restore.
+        }
+      }
+      if (saved) {
+        setSession(saved);
+        return;
+      }
+      setSession({ kind: "demo", accountId: demo.accountId });
+    })();
   }, []);
 
   function remember(next: WalletSession) {
@@ -134,6 +171,76 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function connectSolana() {
+    setBusy(true);
+    setError("");
+    try {
+      const provider = (window as unknown as { solana?: { connect: () => Promise<{ publicKey: { toBytes: () => Uint8Array; toString: () => string } }> } }).solana;
+      if (!provider) throw new Error("Phantom is not available in this browser");
+      const connected = await provider.connect();
+      const bytes = connected.publicKey.toBytes();
+      const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      remember({ kind: "solana", accountId: hex, publicKey: `ed25519:${connected.publicKey.toString()}` });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not connect Phantom");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connectPasskey() {
+    setBusy(true);
+    setError("");
+    try {
+      if (!window.PublicKeyCredential) throw new Error("This browser has no passkey support");
+      const existing = window.localStorage.getItem("intentbook.passkey");
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+      if (!existing) {
+        const created = (await navigator.credentials.create({
+          publicKey: {
+            challenge,
+            rp: { name: "IntentBook" },
+            user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "intentbook", displayName: "IntentBook" },
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
+          },
+        })) as PublicKeyCredential | null;
+        if (!created) throw new Error("Passkey was not created");
+        window.localStorage.setItem("intentbook.passkey", btoa(String.fromCharCode(...new Uint8Array(created.rawId))));
+      }
+      const id = window.localStorage.getItem("intentbook.passkey") || "";
+      remember({ kind: "passkey", accountId: id.slice(0, 24), publicKey: id });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not use a passkey");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function registerNearKey() {
+    if (!session || session.kind !== "near" || !session.publicKey) {
+      setError("Connect a named NEAR account before registering its key");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/v1/keys?account=${encodeURIComponent(session.accountId)}&publicKey=${encodeURIComponent(session.publicKey)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not check the key");
+      if (data.registered === true) {
+        setError("This key is already registered on intents.near");
+        return;
+      }
+      const hash = await nearDeposit(data.call);
+      setError(hash ? `Key registration submitted: ${hash}` : "Confirm the wallet prompt to register the key");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not register the key");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function useDemo() {
     const demo = loadDemoKey();
     nearWallet = null;
@@ -163,6 +270,36 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         signature: prefixKey(signed.signature, "ed25519"),
       };
     }
+    if (session.kind === "solana") {
+      const provider = (window as unknown as { solana?: { signMessage: (message: Uint8Array, display: string) => Promise<{ signature: Uint8Array }> } }).solana;
+      if (!provider) throw new Error("Reconnect Phantom before signing");
+      const signed = await provider.signMessage(new TextEncoder().encode(leg.message), "utf8");
+      const bs58mod = await import("bs58");
+      return {
+        standard: "raw_ed25519",
+        payload: leg.message,
+        public_key: session.publicKey || "",
+        signature: `ed25519:${bs58mod.default.encode(signed.signature)}`,
+      };
+    }
+    if (session.kind === "passkey") {
+      const id = window.localStorage.getItem("intentbook.passkey");
+      if (!id) throw new Error("Create a passkey first");
+      const rawId = Uint8Array.from(atob(id), (char) => char.charCodeAt(0));
+      const assertion = (await navigator.credentials.get({
+        publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)), allowCredentials: [{ id: rawId, type: "public-key" }] },
+      })) as PublicKeyCredential | null;
+      if (!assertion) throw new Error("Passkey signing was cancelled");
+      const response = assertion.response as AuthenticatorAssertionResponse;
+      return {
+        standard: "webauthn",
+        payload: leg.message,
+        public_key: `p256:${id}`,
+        signature: `p256:${btoa(String.fromCharCode(...new Uint8Array(response.signature)))}`,
+        client_data_json: new TextDecoder().decode(response.clientDataJSON),
+        authenticator_data: btoa(String.fromCharCode(...new Uint8Array(response.authenticatorData))),
+      };
+    }
     const ethereum = (window as unknown as { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
     if (!ethereum) throw new Error("MetaMask is not available");
     const hex = `0x${[...new TextEncoder().encode(leg.message)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
@@ -179,7 +316,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return outcome?.transaction?.hash || "";
   }
 
-  const value: WalletApi = { session, busy, error, connectNear, connectEvm, useDemo, signLeg, nearDeposit };
+  const value: WalletApi = { session, busy, error, connectNear, connectEvm, connectSolana, connectPasskey, registerNearKey, useDemo, signLeg, nearDeposit };
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }

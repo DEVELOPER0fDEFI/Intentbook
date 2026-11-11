@@ -1,4 +1,4 @@
-import { accountSummary, balances, bestQuote, book, boot, burnPreview, burnSubmit, candles, cancel, commit, depth, EngineError, health, nearDepositTemplate, orders, preview, priceCompare, quoteDeposit, quoteFallback, referrerStats, registerWebhook, signedCancel, subscribe, ticker, trackDeposit, trades, withdrawPreview, withdrawSubmit } from "@/lib/engine";
+import { accountSummary, balances, bestQuote, book, boot, burnPreview, burnSubmit, candles, cancel, commit, depth, EngineError, health, keyStatus, nearDepositTemplate, orders, preview, priceCompare, quoteDeposit, quoteFallback, referrerStats, registerWebhook, signedCancel, subscribe, ticker, trackDeposit, trades, withdrawPreview, withdrawSubmit } from "@/lib/engine";
 import { json, options, run } from "@/lib/http";
 import type { Side, SignedIntent } from "@/lib/types";
 
@@ -52,6 +52,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ path?: string[]
     if (name === "depth") return depth(url.searchParams.get("pair") || "BTC-USDC", url.searchParams.get("group") || "1");
     if (name.startsWith("accounts/")) return accountSummary(decodeURIComponent(name.slice("accounts/".length)));
     if (name === "referrers") return referrerStats(url.searchParams.get("id") || "");
+    if (name === "keys") return keyStatus(url.searchParams.get("account") || "", url.searchParams.get("publicKey") || "");
     throw new EngineError(404, "Unknown API path");
   });
 }

@@ -6,7 +6,7 @@ export type OrderType = "LIMIT" | "MARKET";
 export type OrderStatus = "OPEN" | "FILLED" | "CANCELLED" | "EXPIRED" | "DEAD";
 export type FillStatus = "SIMULATED" | "FAILED" | "SETTLED";
 export type Settlement = "unfunded" | "executed" | "rejected" | "broadcast";
-export type SignStandard = "nep413" | "erc191";
+export type SignStandard = "nep413" | "erc191" | "raw_ed25519" | "webauthn";
 
 export interface SignedNep413 {
   standard: "nep413";
@@ -25,7 +25,23 @@ export interface SignedErc191 {
   signature: string;
 }
 
-export type SignedIntent = SignedNep413 | SignedErc191;
+export interface SignedRawEd25519 {
+  standard: "raw_ed25519";
+  payload: string;
+  public_key: string;
+  signature: string;
+}
+
+export interface SignedWebauthn {
+  standard: "webauthn";
+  payload: string;
+  public_key: string;
+  signature: string;
+  client_data_json: string;
+  authenticator_data: string;
+}
+
+export type SignedIntent = SignedNep413 | SignedErc191 | SignedRawEd25519 | SignedWebauthn;
 
 export interface StoredOrder {
   id: string;

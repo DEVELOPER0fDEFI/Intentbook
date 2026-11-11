@@ -29,6 +29,8 @@ import {
   verifySigned,
   bytesToBase64,
   makeNonce,
+  nonceRejected,
+  useLegacyNonces,
   type DemoKey,
 } from "./nep413";
 import { depositQuote, depositStatus, fallbackQuote, referencePrices, rheaSwapQuote, withdrawQuote, type ReferencePrice } from "./quotes";
@@ -43,6 +45,7 @@ import { PAIR_IDS } from "./types";
 import {
   batchBalances,
   interpretSimulation,
+  hasPublicKey,
   nonceUsed,
   protocolState,
   simulateIntents,
@@ -521,6 +524,7 @@ async function settleUnlocked(input: {
     relayerConfigured: relayerConfigured(),
   });
   if (liveRequested() && !decision.broadcast) {
+    if (nonceRejected(verdict.message)) useLegacyNonces();
     fill.status = "FAILED";
     fill.settlement = "rejected";
     fill.note = decision.reason;
@@ -545,6 +549,10 @@ async function settleUnlocked(input: {
     }
   }
   if (verdict.kind === "rejected") {
+    if (nonceRejected(verdict.message)) {
+      useLegacyNonces();
+      fill.note = `${fill.note} Nonce format was rejected. The next order uses the legacy nonce.`;
+    }
     state.fills.push(fill);
     persist();
     return fill;
@@ -607,8 +615,14 @@ async function bootInner() {
   try {
     await refreshProtocol();
     const deadline = iso(Date.now() + 10 * 60 * 1000);
-    const probe = signEmptyIntent(state.operator.secretKey, state.salt!, deadline);
+    let probe = signEmptyIntent(state.operator.secretKey, state.salt!, deadline);
     state.authProbe = await simulateIntents([probe]);
+    const probeVerdict = interpretSimulation(state.authProbe);
+    if (probeVerdict.kind === "rejected" && nonceRejected(probeVerdict.message)) {
+      useLegacyNonces();
+      probe = signEmptyIntent(state.operator.secretKey, state.salt!, deadline);
+      state.authProbe = await simulateIntents([probe]);
+    }
     state.authAccount = state.operator.accountId;
     await seedUnlocked();
   } catch (error) {
@@ -740,7 +754,7 @@ function prepareLeg(input: {
   lotIds?: string[];
   baseDecimals: number;
 }): PreparedLeg {
-  const nonceBytes = makeNonce(input.salt);
+  const nonceBytes = makeNonce(input.salt, Date.parse(input.deadline));
   const nonce = bytesToBase64(nonceBytes);
   const nep413 = tokenDiffMessage({
     signerId: input.account,
@@ -924,7 +938,7 @@ function assertLeg(signed: SignedIntent, leg: PreparedLeg, salt: string, account
   if (signed.standard === "nep413" && signed.payload.nonce !== leg.nonce) {
     throw new EngineError(400, "Signed payload does not match the preview");
   }
-  if (signed.standard === "erc191") {
+  if (signed.standard !== "nep413") {
     const parsed = JSON.parse(signed.payload) as { nonce?: string };
     if (parsed.nonce !== leg.nonce) throw new EngineError(400, "Signed payload does not match the preview");
   }
@@ -1415,6 +1429,26 @@ export async function registerWebhook(input: { account: string; url: string; sig
   const id = crypto.randomUUID();
   bookStore().saveWebhook({ id, account, url: input.url, secret });
   return { id, account, url: input.url, secret, note: "Store this secret. It signs X-IntentBook-Signature and is not shown again." };
+}
+
+export async function keyStatus(accountRaw: string, publicKey: string) {
+  await boot();
+  const account = requireBookAccount(accountRaw);
+  if (!publicKey.startsWith("ed25519:")) throw new EngineError(400, "Public key must be ed25519:");
+  const registered = await hasPublicKey(account, publicKey);
+  return {
+    account,
+    publicKey,
+    registered,
+    call: {
+      receiverId: "intents.near",
+      methodName: "add_public_key",
+      args: { public_key: publicKey },
+      gas: "30000000000000",
+      deposit: "1",
+      note: "The user's NEAR wallet signs this. The server does not send it. Named accounts need this before live execute_intents.",
+    },
+  };
 }
 
 export async function referrerStats(referrer: string) {

@@ -77,13 +77,44 @@ export function keyFromSecret(secretKey: Uint8Array): DemoKey {
   return { secretKey, publicKey, accountId: bytesToHex(publicKey) };
 }
 
-export function makeNonce(saltHex: string): Uint8Array {
+export const VERSIONED_NONCE_MAGIC = "5628f6c6";
+
+let forceLegacyNonces = false;
+
+export function useLegacyNonces() {
+  forceLegacyNonces = true;
+}
+
+export function legacyNoncesEnabled(): boolean {
+  return forceLegacyNonces || process.env.INTENTBOOK_NONCE === "legacy";
+}
+
+export function makeLegacyNonce(saltHex: string): Uint8Array {
   const salt = hexToBytes(saltHex);
   if (salt.length !== 4) throw new Error("salt must be 4 bytes");
   const nonce = new Uint8Array(32);
   crypto.getRandomValues(nonce);
   nonce.set(salt, 0);
   return nonce;
+}
+
+/** 32 bytes: magic 5628f6c6, version 1, 4-byte salt, 8-byte deadline ns, 15 random bytes. */
+export function makeVersionedNonce(saltHex: string, deadlineMs: number): Uint8Array {
+  const salt = hexToBytes(saltHex);
+  if (salt.length !== 4) throw new Error("salt must be 4 bytes");
+  const nonce = new Uint8Array(32);
+  nonce.set(hexToBytes(VERSIONED_NONCE_MAGIC), 0);
+  nonce[4] = 1;
+  nonce.set(salt, 5);
+  const deadlineNs = BigInt(Math.max(0, Math.floor(deadlineMs))) * 1_000_000n;
+  new DataView(nonce.buffer).setBigUint64(9, deadlineNs, true);
+  crypto.getRandomValues(nonce.subarray(17));
+  return nonce;
+}
+
+export function makeNonce(saltHex: string, deadlineMs?: number): Uint8Array {
+  if (deadlineMs == null || legacyNoncesEnabled()) return makeLegacyNonce(saltHex);
+  return makeVersionedNonce(saltHex, deadlineMs);
 }
 
 export function sortedDiff(diff: Record<string, string>): Record<string, string> {
@@ -160,14 +191,14 @@ export function signTokenDiff(input: {
     diff: input.diff,
     memo: input.memo,
   });
-  const nonce = makeNonce(input.saltHex);
+  const nonce = makeNonce(input.saltHex, Date.parse(input.deadline));
   return signExisting({ secretKey: input.secretKey, message, nonceBase64: bytesToBase64(nonce) });
 }
 
 export function signEmptyIntent(secretKey: Uint8Array, saltHex: string, deadline: string): SignedNep413 {
   const key = keyFromSecret(secretKey);
   const message = emptyIntentMessage(key.accountId, deadline);
-  const nonce = makeNonce(saltHex);
+  const nonce = makeNonce(saltHex, Date.parse(deadline));
   return signExisting({ secretKey, message, nonceBase64: bytesToBase64(nonce) });
 }
 
@@ -224,5 +255,13 @@ export function readDiffs(message: string): { signerId: string; diff: Record<str
 }
 
 export function nonceSaltHex(nonceBase64: string): string {
-  return bytesToHex(base64ToBytes(nonceBase64).slice(0, 4));
+  const bytes = base64ToBytes(nonceBase64);
+  if (bytes.length >= 9 && bytesToHex(bytes.slice(0, 4)) === VERSIONED_NONCE_MAGIC) {
+    return bytesToHex(bytes.slice(5, 9));
+  }
+  return bytesToHex(bytes.slice(0, 4));
+}
+
+export function nonceRejected(message: string): boolean {
+  return /nonce|salt/i.test(message);
 }

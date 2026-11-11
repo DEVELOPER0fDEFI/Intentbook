@@ -86,6 +86,15 @@ export async function batchBalances(accountId: string, tokenIds: string[]): Prom
   return null;
 }
 
+export async function hasPublicKey(accountId: string, publicKey: string): Promise<boolean | null> {
+  try {
+    const value = await viewCall("has_public_key", { account_id: accountId, public_key: publicKey });
+    return typeof value === "boolean" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function nonceUsed(accountId: string, nonce: string): Promise<boolean | null> {
   const value = await viewCall("is_nonce_used", { account_id: accountId, nonce });
   return typeof value === "boolean" ? value : null;

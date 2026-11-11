@@ -67,6 +67,17 @@ export function SiteHeader() {
           <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.connectEvm()} disabled={wallet.busy}>
             MetaMask
           </button>
+          <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.connectSolana()} disabled={wallet.busy}>
+            Phantom
+          </button>
+          <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.connectPasskey()} disabled={wallet.busy}>
+            Passkey
+          </button>
+          {wallet.session?.kind === "near" && wallet.session.accountId.includes(".") ? (
+            <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.registerNearKey()} disabled={wallet.busy}>
+              Register key
+            </button>
+          ) : null}
           <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => wallet.useDemo()}>
             Demo key
           </button>
