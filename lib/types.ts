@@ -68,6 +68,7 @@ export interface Fill {
   fallback: unknown | null;
   fallbackError: string | null;
   takerFee?: string;
+  takerFeeAtoms?: string;
   txHash?: string;
 }
 
@@ -96,4 +97,5 @@ export interface Preview {
   fallback: unknown | null;
   fallbackError: string | null;
   warnings: string[];
+  referrer?: string;
 }

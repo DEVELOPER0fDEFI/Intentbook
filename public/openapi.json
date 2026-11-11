@@ -1,0 +1,26 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "IntentBook API",
+    "version": "1.0.0",
+    "license": { "name": "Apache-2.0" },
+    "description": "Public book API. Dry-run does not call execute_intents. Writes that move funds require a signed intent and the live gate."
+  },
+  "servers": [{ "url": "http://127.0.0.1:43123" }],
+  "paths": {
+    "/api/v1/book": { "get": { "summary": "Order book", "parameters": [{ "name": "pair", "in": "query", "schema": { "type": "string" } }] } },
+    "/api/v1/depth": { "get": { "summary": "Aggregated depth", "parameters": [{ "name": "pair", "in": "query", "schema": { "type": "string" } }, { "name": "group", "in": "query", "schema": { "type": "string" } }] } },
+    "/api/v1/candles": { "get": { "summary": "Candles 1m, 5m, 1h, 1d" } },
+    "/api/v1/trades": { "get": { "summary": "Recent fills" } },
+    "/api/v1/ticker": { "get": { "summary": "Mids for every pair" } },
+    "/api/v1/compare": { "get": { "summary": "IntentBook book price versus 1Click" } },
+    "/api/v1/quote/best": { "get": { "summary": "Best price across the book, 1Click, and Rhea" } },
+    "/api/v1/accounts/{account}": { "get": { "summary": "Orders, fills, and balances" } },
+    "/api/v1/orders/preview": { "post": { "summary": "Build an unsigned order" } },
+    "/api/v1/orders": { "post": { "summary": "Place a signed order" } },
+    "/api/v1/orders/cancel": { "post": { "summary": "Cancel. Public callers send a signed cancel intent." } },
+    "/api/v1/webhooks": { "post": { "summary": "Register an HMAC webhook" } },
+    "/api/v1/stream": { "get": { "summary": "Server-sent book, trade, and ticker events" } },
+    "/api/v1/referrers": { "get": { "summary": "Referrer share of taker fees" } }
+  }
+}

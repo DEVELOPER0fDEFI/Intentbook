@@ -1,4 +1,4 @@
-import { EngineError, balances, book, boot, burnPreview, burnSubmit, cancel, commit, health, nearDepositTemplate, orders, preview, priceCompare, quoteDeposit, quoteFallback, subscribe, ticker, trackDeposit, trades, withdrawPreview, withdrawSubmit } from "@/lib/engine";
+import { accountSummary, balances, bestQuote, book, boot, burnPreview, burnSubmit, candles, cancel, commit, depth, EngineError, health, nearDepositTemplate, orders, preview, priceCompare, quoteDeposit, quoteFallback, referrerStats, registerWebhook, signedCancel, subscribe, ticker, trackDeposit, trades, withdrawPreview, withdrawSubmit } from "@/lib/engine";
 import { json, options, run } from "@/lib/http";
 import type { Side, SignedIntent } from "@/lib/types";
 
@@ -16,7 +16,7 @@ async function pathOf(ctx: { params: Promise<{ path?: string[] }> }) {
 
 export async function GET(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
   const name = await pathOf(ctx);
-  if (name === "stream") return eventStream();
+  if (name === "stream") return eventStream(req);
   const url = new URL(req.url);
   return run(async () => {
     if (name === "health") return health();
@@ -40,6 +40,18 @@ export async function GET(req: Request, ctx: { params: Promise<{ path?: string[]
         account: url.searchParams.get("account") || undefined,
       });
     }
+    if (name === "quote/best") {
+      return bestQuote({
+        pair: url.searchParams.get("pair") || "BTC-USDC",
+        side: url.searchParams.get("side") === "SELL" ? "SELL" : "BUY",
+        qty: url.searchParams.get("qty") || "0.0001",
+        account: url.searchParams.get("account") || undefined,
+      });
+    }
+    if (name === "candles") return candles(url.searchParams.get("pair") || "BTC-USDC", url.searchParams.get("interval") || "1m");
+    if (name === "depth") return depth(url.searchParams.get("pair") || "BTC-USDC", url.searchParams.get("group") || "1");
+    if (name.startsWith("accounts/")) return accountSummary(decodeURIComponent(name.slice("accounts/".length)));
+    if (name === "referrers") return referrerStats(url.searchParams.get("id") || "");
     throw new EngineError(404, "Unknown API path");
   });
 }
@@ -58,6 +70,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ path?: string[
         qty: String(body.qty ?? ""),
         price: body.price == null ? undefined : String(body.price),
         deadlineSeconds: body.deadlineSeconds == null ? undefined : Number(body.deadlineSeconds),
+        referrer: body.referrer == null ? undefined : String(body.referrer),
       });
     }
     if (name === "orders") {
@@ -67,7 +80,17 @@ export async function POST(req: Request, ctx: { params: Promise<{ path?: string[
         rest: (body.rest as SignedIntent | null | undefined) ?? null,
       });
     }
-    if (name === "orders/cancel") return cancel({ id: String(body.id ?? ""), account: String(body.account ?? "") });
+    if (name === "orders/cancel") {
+      if (body.signed) return signedCancel({ signed: body.signed as SignedIntent });
+      return cancel({ id: String(body.id ?? ""), account: String(body.account ?? "") });
+    }
+    if (name === "webhooks") {
+      return registerWebhook({
+        account: String(body.account ?? ""),
+        url: String(body.url ?? ""),
+        signed: body.signed as SignedIntent,
+      });
+    }
     if (name === "deposit-quote") {
       return quoteDeposit({
         amount: String(body.amount ?? ""),
@@ -121,14 +144,16 @@ export async function POST(req: Request, ctx: { params: Promise<{ path?: string[
   });
 }
 
-async function eventStream() {
+async function eventStream(req: Request) {
   await boot();
+  const pair = new URL(req.url).searchParams.get("pair");
   const encoder = new TextEncoder();
   let unsubscribe = () => {};
   let timer: ReturnType<typeof setInterval> | null = null;
   const stream = new ReadableStream({
     start(controller) {
-      const send = (event: unknown) => {
+      const send = (event: { type?: string; pair?: string; ts?: number; trade?: unknown }) => {
+        if (pair && event.pair && event.pair !== pair) return;
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
       };
       send({ type: "hello", ts: Date.now() });

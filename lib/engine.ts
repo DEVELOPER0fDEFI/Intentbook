@@ -34,8 +34,10 @@ import {
 import { depositQuote, depositStatus, fallbackQuote, referencePrices, rheaSwapQuote, withdrawQuote, type ReferencePrice } from "./quotes";
 import { broadcastExecute } from "./relayer";
 import { routePlan } from "./route";
-import { intentMessage, intentNonce, saltOf, verifyUserSignature } from "./signature";
+import { intentMessage, intentNonce, intentSigner, saltOf, verifyUserSignature } from "./signature";
+import { buildCandles, CANDLE_INTERVALS, groupDepth, pickWinner, type CandleInterval } from "./market";
 import { bookStore, hasNonce, rememberNonce } from "./store";
+import { newWebhookSecret } from "./webhooks";
 import type { Fill, PairId, PreparedLeg, Preview, Side, SignedIntent, SignStandard, StoredOrder } from "./types";
 import { PAIR_IDS } from "./types";
 import {
@@ -60,7 +62,7 @@ interface Memory {
   previews: Map<string, Preview & { reservedIds: string[] }>;
   history: Record<PairId, { t: number; mid: number }[]>;
   mids: Partial<Record<PairId, ReferencePrice>>;
-  listeners: Set<(event: { type: string; ts: number }) => void>;
+  listeners: Set<(event: { type: string; ts: number; pair?: string; trade?: unknown }) => void>;
   mm?: DemoKey;
   operator?: DemoKey;
   feePips?: number;
@@ -126,12 +128,12 @@ function requireBookAccount(account: string): string {
   return accountKind(id) === "evm" ? id : id.toLowerCase();
 }
 
-function emit(type: string) {
-  const event = { type, ts: Date.now() };
+function emit(type: string, extra: { pair?: string; trade?: unknown } = {}) {
+  const event = { type, ts: Date.now(), ...extra };
   for (const listener of memory().listeners) listener(event);
 }
 
-export function subscribe(listener: (event: { type: string; ts: number }) => void): () => void {
+export function subscribe(listener: (event: { type: string; ts: number; pair?: string; trade?: unknown }) => void): () => void {
   memory().listeners.add(listener);
   return () => memory().listeners.delete(listener);
 }
@@ -229,6 +231,7 @@ function publicFill(fill: Fill) {
     fallback: fill.fallback,
     fallbackError: fill.fallbackError,
     takerFee: fill.takerFee ?? null,
+    takerFeeAtoms: fill.takerFeeAtoms ?? null,
     txHash: fill.txHash ?? null,
     explorer: fill.txHash ? `https://nearblocks.io/txns/${fill.txHash}` : "https://nearblocks.io/address/intents.near",
   };
@@ -506,6 +509,7 @@ async function settleUnlocked(input: {
     fallback: input.fallback,
     fallbackError: input.fallbackError,
     takerFee: formatUsd(priced.fee),
+    takerFeeAtoms: priced.fee.toString(),
   };
   const specLot = parseAtoms(PAIRS[input.pair].lot, PAIRS[input.pair].baseDecimals) ?? 1n;
   const decision = executionDecision({
@@ -554,7 +558,11 @@ async function settleUnlocked(input: {
   state.fills.push(fill);
   state.history[input.pair].push({ t: Date.now(), mid: Number(fill.price) });
   persist();
-  emit("fill");
+  const trade = publicFill(fill);
+  emit("fill", { pair: input.pair, trade });
+  void import("./webhooks")
+    .then((mod) => mod.fanoutFill(trade))
+    .catch(() => undefined);
   return fill;
 }
 
@@ -763,6 +771,7 @@ export async function preview(input: {
   qty: string;
   price?: string;
   deadlineSeconds?: number;
+  referrer?: string;
 }) {
   return lock(() => previewUnlocked(input));
 }
@@ -775,6 +784,7 @@ async function previewUnlocked(input: {
   qty: string;
   price?: string;
   deadlineSeconds?: number;
+  referrer?: string;
 }): Promise<Preview> {
   await boot();
   sweepUnlocked();
@@ -889,6 +899,7 @@ async function previewUnlocked(input: {
     fallback,
     fallbackError,
     warnings,
+    referrer: input.referrer || undefined,
     reservedIds: makerOrders.map((order) => order.id),
   };
   memory().previews.set(previewId, body);
@@ -904,6 +915,7 @@ async function previewUnlocked(input: {
     fallback,
     fallbackError,
     warnings,
+    referrer: input.referrer || undefined,
   };
 }
 
@@ -1013,7 +1025,21 @@ async function commitUnlocked(input: { previewId: string; take?: SignedIntent | 
     const fresh = memory().orders.find((order) => order.id === row.id);
     return fresh ? publicOrder(fresh) : row;
   });
-  if (preview.take && fill && fill.settlement !== "rejected") rememberNonce(preview.account, preview.take.nonce);
+  if (preview.take && fill && fill.settlement !== "rejected") {
+    rememberNonce(preview.account, preview.take.nonce);
+    const shareBps = BigInt(process.env.REFERRER_SHARE_BPS || "5000");
+    const feeAtoms = BigInt(fill.takerFeeAtoms || "0");
+    if (preview.referrer && feeAtoms > 0n) {
+      const share = (feeAtoms * shareBps) / 10_000n;
+      bookStore().creditReferrer({
+        id: `${fill.id}:${preview.referrer}`,
+        referrer: preview.referrer,
+        fillId: fill.id,
+        feeAtoms: feeAtoms.toString(),
+        shareAtoms: share.toString(),
+      });
+    }
+  }
   if (preview.rest) rememberNonce(preview.account, preview.rest.nonce);
   persist();
   emit("book");
@@ -1291,4 +1317,108 @@ export async function priceCompare(input: { pair: string; side: Side; qty: strin
     },
     fees: schedule,
   };
+}
+
+export async function candles(pairRaw: string, intervalRaw: string) {
+  await boot();
+  const pair = requirePair(pairRaw);
+  const interval = (intervalRaw in CANDLE_INTERVALS ? intervalRaw : "1m") as CandleInterval;
+  const state = memory();
+  const points = [
+    ...state.history[pair].map((point) => ({ t: point.t, price: point.mid, qty: 0 })),
+    ...state.fills
+      .filter((fill) => fill.pair === pair)
+      .map((fill) => ({ t: Date.parse(fill.createdAt), price: Number(fill.price), qty: Number(fill.baseQty) })),
+  ];
+  return { pair, interval, candles: buildCandles(points, CANDLE_INTERVALS[interval]) };
+}
+
+export async function depth(pairRaw: string, groupRaw: string) {
+  await boot();
+  const pair = requirePair(pairRaw);
+  const groupUsd = Number(groupRaw || "0");
+  const groupAtoms = Number.isFinite(groupUsd) && groupUsd > 0 ? BigInt(Math.round(groupUsd * 1_000_000)) : 0n;
+  const bids = groupDepth(
+    levels(pair, "BUY").map((level) => ({ priceAtoms: BigInt(level.priceAtoms), qtyAtoms: BigInt(level.qtyAtoms) })),
+    groupAtoms,
+  ).sort((a, b) => (BigInt(a.priceAtoms) > BigInt(b.priceAtoms) ? -1 : 1));
+  const asks = groupDepth(
+    levels(pair, "SELL").map((level) => ({ priceAtoms: BigInt(level.priceAtoms), qtyAtoms: BigInt(level.qtyAtoms) })),
+    groupAtoms,
+  ).sort((a, b) => (BigInt(a.priceAtoms) < BigInt(b.priceAtoms) ? -1 : 1));
+  return { pair, group: groupRaw || "0", bids, asks };
+}
+
+export async function bestQuote(input: { pair: string; side: Side; qty: string; account?: string }) {
+  const compared = await priceCompare(input);
+  const pair = requirePair(input.pair);
+  let rheaAtoms = 0n;
+  let rhea: unknown = null;
+  if (pair === "NEAR-USDC") {
+    const spec = PAIRS[pair];
+    const qty = parseAtoms(input.qty, spec.baseDecimals);
+    if (qty) {
+      rhea = await rheaSwapQuote(qty, input.side === "SELL" ? "wrap.near" : USDC_CONTRACT, input.side === "SELL" ? USDC_CONTRACT : "wrap.near");
+      const data = rhea as { result_data?: { amount_out?: string } } | null;
+      if (data?.result_data?.amount_out) rheaAtoms = BigInt(data.result_data.amount_out);
+    }
+  }
+  const legs = [
+    { venue: "book", quoteAtoms: compared.book.totalAtoms, ok: compared.book.unfilled === "0" || compared.book.totalAtoms !== "0" },
+    { venue: "1click", quoteAtoms: compared.oneclick.totalAtoms, ok: !compared.oneclick.error && compared.oneclick.totalAtoms !== "0" },
+    { venue: "rhea", quoteAtoms: rheaAtoms.toString(), ok: rheaAtoms > 0n },
+  ];
+  const winner = pickWinner(
+    input.side,
+    legs.map((leg) => ({ venue: leg.venue, quoteAtoms: BigInt(leg.quoteAtoms || "0"), ok: leg.ok })),
+  );
+  return { ...compared, rhea, legs, winner };
+}
+
+export async function signedCancel(input: { signed: SignedIntent }) {
+  await boot();
+  const message = intentMessage(input.signed);
+  const parsed = JSON.parse(message) as { signer_id?: string; intents?: { intent?: string; order_id?: string }[] };
+  const orderId = parsed.intents?.find((intent) => intent.intent === "cancel")?.order_id;
+  const signer = parsed.signer_id || intentSigner(input.signed);
+  if (!orderId) throw new EngineError(400, "Cancel intent needs order_id");
+  if (!verifyUserSignature(input.signed, signer)) throw new EngineError(400, "Signature did not verify");
+  return cancel({ id: orderId, account: signer });
+}
+
+export async function accountSummary(accountRaw: string) {
+  await boot();
+  const account = requireBookAccount(accountRaw);
+  const orderRows = await orders({ account });
+  const tradeRows = await trades();
+  const fills = tradeRows.trades.filter((trade) => trade.takerAccount === account || trade.makerAccounts.includes(account));
+  const balanceRows = await balances(account);
+  return { account, orders: orderRows.orders, fills, balances: balanceRows.balances, explorer: balanceRows.explorer };
+}
+
+export async function registerWebhook(input: { account: string; url: string; signed: SignedIntent }) {
+  await boot();
+  const account = requireBookAccount(input.account);
+  if (!verifyUserSignature(input.signed, account)) throw new EngineError(400, "Signature did not verify");
+  const message = intentMessage(input.signed);
+  if (!message.includes(input.url)) throw new EngineError(400, "Signed message must include the webhook URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(input.url);
+  } catch {
+    throw new EngineError(400, "Webhook URL is invalid");
+  }
+  if (parsed.protocol !== "https:" && parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
+    throw new EngineError(400, "Webhook URL must be https, or localhost for tests");
+  }
+  const secret = newWebhookSecret();
+  const id = crypto.randomUUID();
+  bookStore().saveWebhook({ id, account, url: input.url, secret });
+  return { id, account, url: input.url, secret, note: "Store this secret. It signs X-IntentBook-Signature and is not shown again." };
+}
+
+export async function referrerStats(referrer: string) {
+  await boot();
+  if (!referrer || referrer.length > 80) throw new EngineError(400, "Referrer id is missing");
+  return { referrer, shareBps: process.env.REFERRER_SHARE_BPS || "5000", ...bookStore().referrerTotal(referrer) };
 }

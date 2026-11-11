@@ -57,7 +57,7 @@ interface Preview {
   fallbackError: string | null;
 }
 
-export function TradeScreen() {
+export function TradeScreen({ referrer = "" }: { referrer?: string }) {
   const [pair, setPair] = useState<PairId>("BTC-USDC");
   const [side, setSide] = useState<Side>("BUY");
   const [orderType, setOrderType] = useState<"LIMIT" | "MARKET">("LIMIT");
@@ -143,6 +143,7 @@ export function TradeScreen() {
           orderType,
           qty,
           price: orderType === "MARKET" ? undefined : limit,
+          referrer: referrer || undefined,
         }),
       });
       const preview = await previewRes.json();

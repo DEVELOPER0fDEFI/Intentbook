@@ -14,17 +14,65 @@ export interface BookSnapshot {
   nonces: NonceRow[];
 }
 
+export interface WebhookRow {
+  id: string;
+  account: string;
+  url: string;
+  secret: string;
+}
+
+export interface DeliveryRow {
+  id: string;
+  webhookId: string;
+  body: string;
+  secret: string;
+  url: string;
+  attempts: number;
+  nextAt: number;
+  status: string;
+}
+
 export interface BookStore {
   load(): BookSnapshot;
   save(snapshot: Pick<BookSnapshot, "orders" | "fills">): void;
   rememberNonce(account: string, nonce: string): void;
   hasNonce(account: string, nonce: string): boolean;
+  saveWebhook(row: WebhookRow): void;
+  listWebhooks(): WebhookRow[];
+  enqueueDelivery(row: { id: string; webhookId: string; body: string; secret: string; url: string }): void;
+  dueDeliveries(now: number): DeliveryRow[];
+  markDelivery(id: string, status: string, attempts: number, nextAt: number): void;
+  creditReferrer(row: { id: string; referrer: string; fillId: string; feeAtoms: string; shareAtoms: string }): void;
+  referrerTotal(referrer: string): { fills: number; shareAtoms: string };
 }
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, json TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS fills (id TEXT PRIMARY KEY, json TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS nonces (account TEXT NOT NULL, nonce TEXT NOT NULL, PRIMARY KEY (account, nonce));
+  CREATE TABLE IF NOT EXISTS webhooks (
+    id TEXT PRIMARY KEY,
+    account TEXT NOT NULL,
+    url TEXT NOT NULL,
+    secret TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS deliveries (
+    id TEXT PRIMARY KEY,
+    webhook_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    url TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    next_at INTEGER NOT NULL,
+    status TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS referrer_credits (
+    id TEXT PRIMARY KEY,
+    referrer TEXT NOT NULL,
+    fill_id TEXT NOT NULL,
+    fee_atoms TEXT NOT NULL,
+    share_atoms TEXT NOT NULL
+  );
 `;
 
 export function createBookStore(db: DatabaseSync): BookStore {
@@ -68,6 +116,68 @@ export function createBookStore(db: DatabaseSync): BookStore {
         | { ok: number }
         | undefined;
       return Boolean(row);
+    },
+    saveWebhook(row) {
+      db.prepare("INSERT INTO webhooks (id, account, url, secret) VALUES (?, ?, ?, ?)").run(row.id, row.account.toLowerCase(), row.url, row.secret);
+    },
+    listWebhooks() {
+      return db
+        .prepare("SELECT id, account, url, secret FROM webhooks")
+        .all()
+        .map((row) => {
+          const item = row as WebhookRow;
+          return { id: String(item.id), account: String(item.account), url: String(item.url), secret: String(item.secret) };
+        });
+    },
+    enqueueDelivery(row) {
+      db.prepare(
+        "INSERT INTO deliveries (id, webhook_id, body, secret, url, attempts, next_at, status) VALUES (?, ?, ?, ?, ?, 0, ?, 'pending')",
+      ).run(row.id, row.webhookId, row.body, row.secret, row.url, Date.now());
+    },
+    dueDeliveries(now) {
+      return db
+        .prepare("SELECT id, webhook_id, body, secret, url, attempts, next_at, status FROM deliveries WHERE status != 'sent' AND status != 'dead' AND next_at <= ?")
+        .all(now)
+        .map((row) => {
+          const item = row as {
+            id: string;
+            webhook_id: string;
+            body: string;
+            secret: string;
+            url: string;
+            attempts: number;
+            next_at: number;
+            status: string;
+          };
+          return {
+            id: String(item.id),
+            webhookId: String(item.webhook_id),
+            body: String(item.body),
+            secret: String(item.secret),
+            url: String(item.url),
+            attempts: Number(item.attempts),
+            nextAt: Number(item.next_at),
+            status: String(item.status),
+          };
+        });
+    },
+    markDelivery(id, status, attempts, nextAt) {
+      db.prepare("UPDATE deliveries SET status = ?, attempts = ?, next_at = ? WHERE id = ?").run(status, attempts, nextAt, id);
+    },
+    creditReferrer(row) {
+      db.prepare("INSERT OR IGNORE INTO referrer_credits (id, referrer, fill_id, fee_atoms, share_atoms) VALUES (?, ?, ?, ?, ?)").run(
+        row.id,
+        row.referrer,
+        row.fillId,
+        row.feeAtoms,
+        row.shareAtoms,
+      );
+    },
+    referrerTotal(referrer) {
+      const rows = db.prepare("SELECT share_atoms FROM referrer_credits WHERE referrer = ?").all(referrer) as { share_atoms: string }[];
+      let total = 0n;
+      for (const row of rows) total += BigInt(row.share_atoms || "0");
+      return { fills: rows.length, shareAtoms: total.toString() };
     },
   };
 }
