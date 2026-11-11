@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Fraunces, IBM_Plex_Mono, Outfit } from "next/font/google";
 import { SiteHeader } from "@/components/site-header";
+import { WalletProvider } from "@/components/wallet";
 import "./globals.css";
 
 const outfit = Outfit({ subsets: ["latin"], variable: "--font-outfit" });
@@ -16,8 +17,10 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en">
       <body className={`${outfit.variable} ${plex.variable} ${fraunces.variable} antialiased`}>
-        <SiteHeader />
-        <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-4">{children}</main>
+        <WalletProvider>
+          <SiteHeader />
+          <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-4">{children}</main>
+        </WalletProvider>
       </body>
     </html>
   );

@@ -105,7 +105,7 @@ export async function referencePrices(): Promise<ReferencePrice[]> {
 }
 
 export interface QuoteRequest {
-  dry: true;
+  dry: boolean;
   swapType: "EXACT_INPUT" | "EXACT_OUTPUT";
   slippageTolerance: number;
   originAsset: string;
@@ -147,14 +147,16 @@ export async function depositQuote(input: {
   usdcAmount: string;
   intentsAccount: string;
   refundTo: string;
+  dry?: boolean;
+  originAsset?: string;
 }): Promise<unknown> {
   const atoms = parseAtoms(input.usdcAmount, USDC_DECIMALS);
   if (atoms == null || atoms <= 0n) throw new Error("Enter a USDC amount like 20");
   return oneclickQuote({
-    dry: true,
+    dry: input.dry !== false,
     swapType: "EXACT_INPUT",
     slippageTolerance: 100,
-    originAsset: BASE_USDC_ASSET,
+    originAsset: input.originAsset || BASE_USDC_ASSET,
     depositType: "ORIGIN_CHAIN",
     destinationAsset: USDC_ASSET,
     amount: atoms.toString(),
@@ -164,6 +166,42 @@ export async function depositQuote(input: {
     refundType: "ORIGIN_CHAIN",
     deadline: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
+}
+
+export async function withdrawQuote(input: {
+  usdcAmount: string;
+  intentsAccount: string;
+  destinationAsset: string;
+  recipient: string;
+  dry?: boolean;
+}): Promise<unknown> {
+  const atoms = parseAtoms(input.usdcAmount, USDC_DECIMALS);
+  if (atoms == null || atoms <= 0n) throw new Error("Enter a USDC amount like 20");
+  return oneclickQuote({
+    dry: input.dry !== false,
+    swapType: "EXACT_INPUT",
+    slippageTolerance: 100,
+    originAsset: USDC_ASSET,
+    depositType: "INTENTS",
+    destinationAsset: input.destinationAsset,
+    amount: atoms.toString(),
+    recipient: input.recipient,
+    recipientType: "DESTINATION_CHAIN",
+    refundTo: input.intentsAccount,
+    refundType: "INTENTS",
+    deadline: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+  });
+}
+
+export async function rheaSwapQuote(amountIn: bigint, tokenIn: string, tokenOut: string): Promise<unknown | null> {
+  const url = new URL(RHEA_QUOTE_URL);
+  url.searchParams.set("amountIn", amountIn.toString());
+  url.searchParams.set("tokenIn", tokenIn);
+  url.searchParams.set("tokenOut", tokenOut);
+  url.searchParams.set("slippage", "0.005");
+  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) return null;
+  return res.json();
 }
 
 export async function fallbackQuote(input: {

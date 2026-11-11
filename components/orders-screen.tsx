@@ -2,7 +2,7 @@
 
 import * as Tabs from "@radix-ui/react-tabs";
 import { useEffect, useState } from "react";
-import { loadDemoKey, signExisting } from "@/lib/demo-wallet";
+import { useWallet } from "@/components/wallet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { shortAccount } from "@/lib/format";
@@ -35,7 +35,9 @@ interface FillRow {
 }
 
 export function OrdersScreen() {
-  const [account, setAccount] = useState("");
+  const wallet = useWallet();
+  const account = wallet.session?.accountId ?? "";
+  const [cancelNote, setCancelNote] = useState("");
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [fills, setFills] = useState<FillRow[]>([]);
   const [error, setError] = useState("");
@@ -55,13 +57,12 @@ export function OrdersScreen() {
   }
 
   useEffect(() => {
-    const key = loadDemoKey();
-    setAccount(key.accountId);
-    load(key.accountId).catch(() => setError("Could not load orders."));
-    const timer = setInterval(() => load(key.accountId).catch(() => undefined), 3000);
+    if (!account) return;
+    load(account).catch(() => setError("Could not load orders."));
+    const timer = setInterval(() => load(account).catch(() => undefined), 3000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [account]);
 
   async function cancel(id: string) {
     setError("");
@@ -72,6 +73,7 @@ export function OrdersScreen() {
     });
     const data = await res.json();
     if (!res.ok) setError(data.error || "Cancel failed");
+    else setCancelNote(String(data.onChain || ""));
     await load();
   }
 
@@ -79,12 +81,12 @@ export function OrdersScreen() {
     setBusy(true);
     setError("");
     try {
-      const key = loadDemoKey();
+      if (!account) throw new Error("Choose a wallet first");
       const previewRes = await fetch("/api/v1/orders/preview", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          account: key.accountId,
+          account,
           pair: "BTC-USDC",
           side: "BUY",
           orderType: "LIMIT",
@@ -96,13 +98,7 @@ export function OrdersScreen() {
       const preview = await previewRes.json();
       if (!previewRes.ok) throw new Error(preview.error || "Could not stage the order");
       const body: Record<string, unknown> = { previewId: preview.previewId };
-      if (preview.rest) {
-        body.rest = signExisting({
-          secretKey: key.secretKey,
-          message: preview.rest.message,
-          nonceBase64: preview.rest.nonce,
-        });
-      }
+      if (preview.rest) body.rest = await wallet.signLeg(preview.rest);
       const placed = await fetch("/api/v1/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -110,7 +106,7 @@ export function OrdersScreen() {
       });
       const data = await placed.json();
       if (!placed.ok) throw new Error(data.error || "Could not place the order");
-      await load(key.accountId);
+      await load(account);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not place the order");
     } finally {
@@ -130,6 +126,7 @@ export function OrdersScreen() {
         </Button>
       </div>
       {error ? <p className="text-sm text-ask">{error}</p> : null}
+      {cancelNote ? <p className="text-sm text-muted">{cancelNote}</p> : null}
       <Tabs.Root defaultValue="open">
         <Tabs.List className="flex gap-2">
           <Tabs.Trigger className="rounded-md px-3 py-1.5 text-sm data-[state=active]:bg-panel" value="open">
@@ -156,6 +153,25 @@ export function OrdersScreen() {
                     Cancel
                   </Button>
                 ) : null}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={async () => {
+                    const res = await fetch("/api/v1/orders/burn-preview", {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ id: order.id, account }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) {
+                      setError(data.error || "Could not prepare the nonce burn");
+                      return;
+                    }
+                    setCancelNote(String(data.note || ""));
+                  }}
+                >
+                  Nonce burn
+                </Button>
               </div>
             </article>
           ))}

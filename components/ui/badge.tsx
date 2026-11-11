@@ -17,6 +17,8 @@ const tones: Record<string, string> = {
   unfunded: "bg-gold/15 text-gold",
   executed: "bg-bid/15 text-bid",
   rejected: "bg-ask/15 text-ask",
+  broadcast: "bg-bid/15 text-bid",
+  SETTLED: "bg-bid/15 text-bid",
 };
 
 export function Badge({ value }: { value: string }) {

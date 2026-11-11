@@ -1,33 +1,40 @@
 import fs from "node:fs";
 import path from "node:path";
-import { PAIRS, USDC_ASSET } from "./assets";
+import { accountKind, sameAccount } from "./accounts";
+import { PAIRS, USDC_ASSET, USDC_CONTRACT } from "./assets";
+import { ONCHAIN_CANCEL_NOTE, nearDepositCall, withdrawIntent } from "./chain";
 import { closureForDeltas } from "./closure";
+import { erc191FromNep413Message } from "./erc191";
+import { MAKER_FEE_BPS, TAKER_FEE_BPS, takerLeg } from "./fees";
 import {
   formatAtoms,
   formatUsd,
   isEvmAddress,
-  isImplicitAccount,
   parseAtoms,
   parsePriceAtoms,
   priceAtomsFromFill,
   quoteAtomsForBase,
 } from "./format";
+import { executionDecision, liveRequested, relayerConfigured } from "./live";
 import { selectLots } from "./matcher";
 import {
+  emptyIntentMessage,
   generateKey,
-  nonceSaltHex,
   readDiffs,
   signEmptyIntent,
   signTokenDiff,
-  sortedDiff,
   tokenDiffMessage,
   verifySigned,
   bytesToBase64,
   makeNonce,
   type DemoKey,
 } from "./nep413";
-import { depositQuote, depositStatus, fallbackQuote, referencePrices, type ReferencePrice } from "./quotes";
-import type { Fill, PairId, PreparedLeg, Preview, Side, SignedNep413, StoredOrder } from "./types";
+import { depositQuote, depositStatus, fallbackQuote, referencePrices, rheaSwapQuote, withdrawQuote, type ReferencePrice } from "./quotes";
+import { broadcastExecute } from "./relayer";
+import { routePlan } from "./route";
+import { intentMessage, intentNonce, saltOf, verifyUserSignature } from "./signature";
+import { bookStore, hasNonce, rememberNonce } from "./store";
+import type { Fill, PairId, PreparedLeg, Preview, Side, SignedIntent, SignStandard, StoredOrder } from "./types";
 import { PAIR_IDS } from "./types";
 import {
   batchBalances,
@@ -83,27 +90,38 @@ const DATA_PATH = path.join(process.cwd(), ".data", "state.json");
 
 function persist() {
   const state = memory();
-  const payload = {
-    orders: state.orders.filter((order) => order.role === "user"),
-    fills: state.fills.slice(-200),
-  };
+  const orders = state.orders.filter((order) => order.role === "user");
+  const fills = state.fills.slice(-500);
+  bookStore().save({ orders, fills });
+  const payload = { orders, fills };
   fs.mkdirSync(path.dirname(DATA_PATH), { recursive: true });
   fs.writeFileSync(DATA_PATH, JSON.stringify(payload));
 }
 
 function load() {
   const state = memory();
-  if (!fs.existsSync(DATA_PATH)) return;
   try {
-    const parsed = JSON.parse(fs.readFileSync(DATA_PATH, "utf8")) as {
-      orders?: StoredOrder[];
-      fills?: Fill[];
-    };
-    state.orders.push(...(parsed.orders ?? []).filter((order) => order.role === "user"));
-    state.fills.push(...(parsed.fills ?? []));
+    const stored = bookStore().load();
+    if (stored.orders.length === 0 && stored.fills.length === 0 && fs.existsSync(DATA_PATH)) {
+      const parsed = JSON.parse(fs.readFileSync(DATA_PATH, "utf8")) as { orders?: StoredOrder[]; fills?: Fill[] };
+      state.orders.push(...(parsed.orders ?? []).filter((order) => order.role === "user"));
+      state.fills.push(...(parsed.fills ?? []));
+      persist();
+      return;
+    }
+    state.orders.push(...stored.orders.filter((order) => order.role === "user"));
+    state.fills.push(...stored.fills);
   } catch {
     // Ignore a corrupt local file and start empty.
   }
+}
+
+function requireBookAccount(account: string): string {
+  const id = account.trim();
+  if (accountKind(id) === "invalid") {
+    throw new EngineError(400, "Account must be a NEAR account, an implicit id, or an EVM address");
+  }
+  return accountKind(id) === "evm" ? id : id.toLowerCase();
 }
 
 function emit(type: string) {
@@ -151,22 +169,6 @@ async function refreshProtocol() {
 
 function diffEntries(diff: Record<string, bigint>): [string, bigint][] {
   return Object.entries(diff);
-}
-
-function sumDiffs(diffs: Record<string, bigint>[]): Record<string, bigint> {
-  const out: Record<string, bigint> = {};
-  for (const diff of diffs) {
-    for (const [token, amount] of Object.entries(diff)) out[token] = (out[token] ?? 0n) + amount;
-  }
-  return out;
-}
-
-function opposite(diff: Record<string, bigint>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [token, amount] of Object.entries(diff)) {
-    if (amount !== 0n) out[token] = (-amount).toString();
-  }
-  return sortedDiff(out);
 }
 
 function orderLots(pair: PairId, now: number) {
@@ -224,7 +226,9 @@ function publicFill(fill: Fill) {
     createdAt: fill.createdAt,
     fallback: fill.fallback,
     fallbackError: fill.fallbackError,
-    explorer: "https://nearblocks.io/address/intents.near",
+    takerFee: fill.takerFee ?? null,
+    txHash: fill.txHash ?? null,
+    explorer: fill.txHash ? `https://nearblocks.io/txns/${fill.txHash}` : "https://nearblocks.io/address/intents.near",
   };
 }
 
@@ -397,32 +401,34 @@ async function settleUnlocked(input: {
   pair: PairId;
   makerOrders: StoredOrder[];
   takerKey?: DemoKey;
-  takerSigned?: SignedNep413;
+  takerSigned?: SignedIntent;
   note: string;
   fallback: unknown | null;
   fallbackError: string | null;
 }): Promise<Fill> {
   const state = memory();
   const protocol = requireProtocol();
-  const makerDiffs = input.makerOrders.map((order) => readDiffs(order.signed.payload.message)[0]?.diff ?? {});
-  const combined = sumDiffs(makerDiffs);
+  const makerDiffs = input.makerOrders.map((order) => readDiffs(intentMessage(order.signed))[0]?.diff ?? {});
+  const priced = takerLeg(makerDiffs, USDC_ASSET, TAKER_FEE_BPS);
   if (!input.takerSigned && !input.takerKey) throw new EngineError(500, "Missing taker signature");
   const takerSigned =
     input.takerSigned ??
     signTokenDiff({
       secretKey: input.takerKey!.secretKey,
       deadline: iso(Date.now() + 90_000),
-      diff: opposite(combined),
+      diff: priced.taker,
       memo: `intentbook:${input.pair}:TAKE`,
       saltHex: protocol.salt,
     });
-  if (!verifySigned(takerSigned)) throw new EngineError(400, "Taker signature was rejected locally");
-  const takerDiff = readDiffs(takerSigned.payload.message)[0]?.diff ?? {};
-  const takerAccount = JSON.parse(takerSigned.payload.message).signer_id as string;
+  if (input.takerKey && takerSigned.standard === "nep413" && !verifySigned(takerSigned)) {
+    throw new EngineError(400, "Taker signature was rejected locally");
+  }
+  const takerDiff = readDiffs(intentMessage(takerSigned))[0]?.diff ?? {};
+  const takerAccount = JSON.parse(intentMessage(takerSigned)).signer_id as string;
   const deltas: [string, bigint][] = [];
   const diffs: Fill["diffs"] = [];
   for (const order of input.makerOrders) {
-    const diff = readDiffs(order.signed.payload.message)[0]?.diff ?? {};
+    const diff = readDiffs(intentMessage(order.signed))[0]?.diff ?? {};
     diffs.push({
       account: order.owner,
       diff: Object.fromEntries(Object.entries(diff).map(([token, amount]) => [token, amount.toString()])),
@@ -434,10 +440,25 @@ async function settleUnlocked(input: {
     diff: Object.fromEntries(Object.entries(takerDiff).map(([token, amount]) => [token, amount.toString()])),
   });
   deltas.push(...diffEntries(takerDiff));
+  if (priced.fee > 0n) {
+    for (const [token, amount] of Object.entries(priced.operator)) deltas.push([token, BigInt(amount)]);
+  }
   const closure = closureForDeltas(deltas, BigInt(protocol.feePips));
   const closureDiff = Object.fromEntries([...closure.entries()].map(([token, amount]) => [token, amount.toString()]));
-  const batch: SignedNep413[] = input.makerOrders.map((order) => order.signed);
+  const batch: SignedIntent[] = input.makerOrders.map((order) => order.signed);
   batch.push(takerSigned);
+  if (!state.operator) throw new EngineError(500, "Operator key is missing");
+  if (priced.fee > 0n) {
+    const feeSigned = signTokenDiff({
+      secretKey: state.operator.secretKey,
+      deadline: iso(Date.now() + 10 * 60 * 1000),
+      diff: priced.operator,
+      memo: `intentbook:${input.pair}:FEE`,
+      saltHex: protocol.salt,
+    });
+    batch.push(feeSigned);
+    diffs.push({ account: state.operator.accountId, diff: priced.operator });
+  }
   if (closure.size > 0) {
     if (!state.operator) throw new EngineError(500, "Operator key is missing");
     const closureSigned = signTokenDiff({
@@ -482,7 +503,41 @@ async function settleUnlocked(input: {
     createdAt: new Date().toISOString(),
     fallback: input.fallback,
     fallbackError: input.fallbackError,
+    takerFee: formatUsd(priced.fee),
   };
+  const specLot = parseAtoms(PAIRS[input.pair].lot, PAIRS[input.pair].baseDecimals) ?? 1n;
+  const decision = executionDecision({
+    live: liveRequested(),
+    verdict: verdict.kind,
+    baseQty,
+    lot: specLot,
+    quoteQty,
+    relayerConfigured: relayerConfigured(),
+  });
+  if (liveRequested() && !decision.broadcast) {
+    fill.status = "FAILED";
+    fill.settlement = "rejected";
+    fill.note = decision.reason;
+    state.fills.push(fill);
+    persist();
+    return fill;
+  }
+  if (decision.broadcast) {
+    try {
+      const tx = await broadcastExecute(batch);
+      fill.txHash = tx.txHash;
+      fill.status = "SETTLED";
+      fill.settlement = "broadcast";
+      fill.note = `${decision.reason} Transaction ${tx.txHash}.`;
+    } catch (error) {
+      fill.status = "FAILED";
+      fill.settlement = "rejected";
+      fill.note = `Broadcast failed and was not retried. ${error instanceof Error ? error.message : "execute_intents failed"}`;
+      state.fills.push(fill);
+      persist();
+      return fill;
+    }
+  }
   if (verdict.kind === "rejected") {
     state.fills.push(fill);
     persist();
@@ -574,9 +629,13 @@ export async function health() {
     ok: state.feePips != null,
     service: "intentbook",
     dryRun: true,
-    liveExecution: process.env.INTENTBOOK_LIVE === "1" ? "refused" : "off",
-    liveNote:
-      "This build never calls execute_intents. INTENTBOOK_LIVE is recognized and still refused, so a flag cannot spend funds.",
+    liveExecution: liveRequested() ? (relayerConfigured() ? "armed" : "refused") : "off",
+    liveNote: liveRequested()
+      ? "INTENTBOOK_LIVE=1. execute_intents runs only after simulate_intents succeeds, the order is within 5 lots and 50 USDC, and NEAR_RELAYER_ACCOUNT plus NEAR_RELAYER_PRIVATE_KEY are set."
+      : "Dry-run is the default. execute_intents is not called.",
+    takerFeeBps: Number(TAKER_FEE_BPS),
+    makerFeeBps: Number(MAKER_FEE_BPS),
+    sqlite: true,
     contract: process.env.INTENTS_CONTRACT || "intents.near",
     feePips: state.feePips ?? null,
     salt: state.salt ?? null,
@@ -654,6 +713,10 @@ export async function orders(filter: { account?: string; pair?: string; status?:
   return { orders: rows.slice(-200).reverse().map(publicOrder) };
 }
 
+function signingStandard(account: string): SignStandard {
+  return accountKind(account) === "evm" ? "erc191" : "nep413";
+}
+
 function prepareLeg(input: {
   account: string;
   deadline: string;
@@ -662,23 +725,29 @@ function prepareLeg(input: {
   salt: string;
   baseQty: bigint;
   quoteQty: bigint;
+  fee?: bigint;
   priceAtoms: bigint;
   lotIds?: string[];
   baseDecimals: number;
 }): PreparedLeg {
-  const nonce = makeNonce(input.salt);
+  const nonceBytes = makeNonce(input.salt);
+  const nonce = bytesToBase64(nonceBytes);
+  const nep413 = tokenDiffMessage({
+    signerId: input.account,
+    deadline: input.deadline,
+    diff: input.diff,
+    memo: input.memo,
+  });
+  const standard = signingStandard(input.account);
   return {
-    message: tokenDiffMessage({
-      signerId: input.account,
-      deadline: input.deadline,
-      diff: input.diff,
-      memo: input.memo,
-    }),
-    nonce: bytesToBase64(nonce),
+    message: standard === "erc191" ? erc191FromNep413Message(nep413, nonce) : nep413,
+    nonce,
     recipient: "intents.near",
+    standard,
     baseQty: formatAtoms(input.baseQty, input.baseDecimals, 8),
     quoteQty: formatUsd(input.quoteQty),
     price: formatUsd(input.priceAtoms),
+    fee: formatUsd(input.fee ?? 0n),
     deadline: input.deadline,
     lotIds: input.lotIds,
   };
@@ -707,8 +776,7 @@ async function previewUnlocked(input: {
 }): Promise<Preview> {
   await boot();
   sweepUnlocked();
-  const account = input.account.toLowerCase();
-  if (!isImplicitAccount(account)) throw new EngineError(400, "Account must be a 64-character implicit account id");
+  const account = requireBookAccount(input.account);
   const pair = requirePair(input.pair);
   const spec = PAIRS[pair];
   const qty = parseAtoms(input.qty, spec.baseDecimals);
@@ -726,25 +794,25 @@ async function previewUnlocked(input: {
   const warnings: string[] = [];
   let take: PreparedLeg | null = null;
   if (makerOrders.length > 0) {
-    const makerDiffs = makerOrders.map((order) => readDiffs(order.signed.payload.message)[0]?.diff ?? {});
-    const takerDiff = opposite(sumDiffs(makerDiffs));
-    const base = BigInt(takerDiff[spec.baseAsset] ?? "0");
-    const quote = BigInt(takerDiff[USDC_ASSET] ?? "0");
+    const makerDiffs = makerOrders.map((order) => readDiffs(intentMessage(order.signed))[0]?.diff ?? {});
+    const priced = takerLeg(makerDiffs, USDC_ASSET, TAKER_FEE_BPS);
+    const base = BigInt(priced.taker[spec.baseAsset] ?? "0");
     const baseQty = base < 0n ? -base : base;
-    const quoteQty = quote < 0n ? -quote : quote;
     take = prepareLeg({
       account,
       deadline: iso(now + 90_000),
-      diff: takerDiff,
+      diff: priced.taker,
       memo: `intentbook:${pair}:${input.side}:TAKE`,
       salt: protocol.salt,
       baseQty,
-      quoteQty,
-      priceAtoms: priceAtomsFromFill(baseQty, quoteQty, spec.baseDecimals),
+      quoteQty: priced.quoteAbs,
+      fee: priced.fee,
+      priceAtoms: priceAtomsFromFill(baseQty, priced.quoteAbs, spec.baseDecimals),
       lotIds: makerOrders.map((order) => order.id),
       baseDecimals: spec.baseDecimals,
     });
     warnings.push("This order crosses the book. You sign the makers' prices, so you keep any price improvement.");
+    warnings.push(`Taker fee is ${TAKER_FEE_BPS.toString()} bps (${formatUsd(priced.fee)} USDC). Maker fee is ${MAKER_FEE_BPS.toString()} bps.`);
   }
   let rest: PreparedLeg | null = null;
   const seconds = input.deadlineSeconds ?? 24 * 60 * 60;
@@ -770,7 +838,7 @@ async function previewUnlocked(input: {
     if (take) warnings.push("Size left over after whole maker lots will rest at your limit. That is a second signature.");
     else warnings.push("Nothing was marketable in whole lots. The order will rest. A signed order does not lock the balance.");
   } else if (input.orderType === "MARKET" && selected.leftover > 0n) {
-    warnings.push("The book could not take the full size in whole lots. The remainder is quoted on 1Click and is not executed.");
+    warnings.push(routePlan({ taken: makerOrders.length, leftover: selected.leftover, pair }).note);
   }
   if (!take && !rest && input.orderType === "LIMIT") {
     throw new EngineError(400, "Nothing to place");
@@ -778,11 +846,27 @@ async function previewUnlocked(input: {
   let fallback: unknown = null;
   let fallbackError: string | null = null;
   if (input.orderType === "MARKET" && selected.leftover > 0n) {
+    const plan = routePlan({ taken: makerOrders.length, leftover: selected.leftover, pair });
+    const routed: { plan: ReturnType<typeof routePlan>; oneclick: unknown; rhea: unknown } = {
+      plan,
+      oneclick: null,
+      rhea: null,
+    };
     try {
-      fallback = await fallbackQuote({ pair, side: input.side, baseQty: selected.leftover, account });
+      routed.oneclick = await fallbackQuote({ pair, side: input.side, baseQty: selected.leftover, account });
     } catch (error) {
       fallbackError = error instanceof Error ? error.message : String(error);
     }
+    if (plan.rhea) {
+      try {
+        const tokenIn = input.side === "SELL" ? "wrap.near" : USDC_CONTRACT;
+        const tokenOut = input.side === "SELL" ? USDC_CONTRACT : "wrap.near";
+        routed.rhea = await rheaSwapQuote(selected.leftover, tokenIn, tokenOut);
+      } catch {
+        routed.rhea = { error: "Rhea quote failed" };
+      }
+    }
+    fallback = routed;
   }
   const previewId = crypto.randomUUID();
   const expiresAt = iso(now + 60_000);
@@ -821,23 +905,26 @@ async function previewUnlocked(input: {
   };
 }
 
-function assertLeg(signed: SignedNep413, leg: PreparedLeg, salt: string) {
-  if (!verifySigned(signed)) throw new EngineError(400, "Signature did not verify");
-  if (signed.payload.message !== leg.message || signed.payload.nonce !== leg.nonce) {
+function assertLeg(signed: SignedIntent, leg: PreparedLeg, salt: string, account: string) {
+  if (intentMessage(signed) !== leg.message) throw new EngineError(400, "Signed payload does not match the preview");
+  if (signed.standard === "nep413" && signed.payload.nonce !== leg.nonce) {
     throw new EngineError(400, "Signed payload does not match the preview");
   }
-  if (nonceSaltHex(signed.payload.nonce) !== salt) {
-    throw new EngineError(400, "Nonce salt is stale. Review the order again.");
+  if (signed.standard === "erc191") {
+    const parsed = JSON.parse(signed.payload) as { nonce?: string };
+    if (parsed.nonce !== leg.nonce) throw new EngineError(400, "Signed payload does not match the preview");
   }
-  const signer = JSON.parse(signed.payload.message).signer_id as string;
-  return signer;
+  if (!verifyUserSignature(signed, account)) throw new EngineError(400, "Signature did not verify");
+  if (saltOf(signed) !== salt) throw new EngineError(400, "Nonce salt is stale. Review the order again.");
+  if (hasNonce(account, leg.nonce)) throw new EngineError(409, "That nonce was already cancelled or used here");
+  return account;
 }
 
-export async function commit(input: { previewId: string; take?: SignedNep413 | null; rest?: SignedNep413 | null }) {
+export async function commit(input: { previewId: string; take?: SignedIntent | null; rest?: SignedIntent | null }) {
   return lock(() => commitUnlocked(input));
 }
 
-async function commitUnlocked(input: { previewId: string; take?: SignedNep413 | null; rest?: SignedNep413 | null }) {
+async function commitUnlocked(input: { previewId: string; take?: SignedIntent | null; rest?: SignedIntent | null }) {
   await boot();
   const preview = memory().previews.get(input.previewId);
   if (!preview) throw new EngineError(404, "Preview expired. Review the order again.");
@@ -852,9 +939,9 @@ async function commitUnlocked(input: { previewId: string; take?: SignedNep413 | 
   try {
     if (preview.take) {
       if (!input.take) throw new EngineError(400, "The crossing order still needs a signature");
-      const signer = assertLeg(input.take, preview.take, protocol.salt);
+      const signer = assertLeg(input.take, preview.take, protocol.salt, preview.account);
       if (signer !== preview.account) throw new EngineError(400, "Signer does not match the preview account");
-      const used = await nonceUsed(signer, input.take.payload.nonce);
+      const used = await nonceUsed(signer, intentNonce(input.take));
       if (used) throw new EngineError(409, "That nonce is already used on intents.near");
       const makers = preview.reservedIds
         .map((id) => memory().orders.find((order) => order.id === id && order.status === "OPEN"))
@@ -879,10 +966,10 @@ async function commitUnlocked(input: { previewId: string; take?: SignedNep413 | 
     }
     if (preview.rest) {
       if (!input.rest) throw new EngineError(400, "The resting order still needs a signature");
-      const signer = assertLeg(input.rest, preview.rest, protocol.salt);
+      const signer = assertLeg(input.rest, preview.rest, protocol.salt, preview.account);
       if (signer !== preview.account) throw new EngineError(400, "Signer does not match the preview account");
       const spec = PAIRS[preview.pair];
-      const signedDiff = readDiffs(input.rest.payload.message)[0]?.diff ?? {};
+      const signedDiff = readDiffs(intentMessage(input.rest))[0]?.diff ?? {};
       const baseSigned = signedDiff[spec.baseAsset] ?? 0n;
       const quoteSigned = signedDiff[USDC_ASSET] ?? 0n;
       const qty = baseSigned < 0n ? -baseSigned : baseSigned;
@@ -901,7 +988,7 @@ async function commitUnlocked(input: { previewId: string; take?: SignedNep413 | 
         owner: preview.account,
         role: "user",
         signed: input.rest,
-        nonce: input.rest.payload.nonce,
+        nonce: intentNonce(input.rest),
         deadline: preview.rest.deadline,
         createdAt: new Date().toISOString(),
         status: "OPEN",
@@ -924,16 +1011,25 @@ async function commitUnlocked(input: { previewId: string; take?: SignedNep413 | 
     const fresh = memory().orders.find((order) => order.id === row.id);
     return fresh ? publicOrder(fresh) : row;
   });
+  if (preview.take && fill && fill.settlement !== "rejected") rememberNonce(preview.account, preview.take.nonce);
+  if (preview.rest) rememberNonce(preview.account, preview.rest.nonce);
   persist();
   emit("book");
   const shown = fills.find((item) => item.settlement !== "rejected") ?? fills[0] ?? null;
+  const decision = executionDecision({
+    live: liveRequested(),
+    verdict: "executed",
+    baseQty: 1n,
+    lot: 1n,
+    quoteQty: 1n,
+    relayerConfigured: relayerConfigured(),
+  });
   return {
     ok: true,
-    liveExecution: process.env.INTENTBOOK_LIVE === "1" ? "refused" : "off",
-    liveNote:
-      process.env.INTENTBOOK_LIVE === "1"
-        ? "INTENTBOOK_LIVE is set, and this build still refuses to broadcast. No execute_intents call was made."
-        : "Dry-run. No execute_intents call was made.",
+    liveExecution: liveRequested() ? (relayerConfigured() ? "armed" : "refused") : "off",
+    liveNote: decision.broadcast
+      ? "Live mode is armed. A match broadcasts only after simulate_intents succeeds and the size cap passes."
+      : decision.reason,
     orders: ordersNow,
     fill: shown ? publicFill(shown) : null,
     fills: fills.map(publicFill),
@@ -950,16 +1046,16 @@ export async function cancel(input: { id: string; account: string }) {
     order.status = "CANCELLED";
     order.reservedBy = undefined;
     order.reservedUntil = undefined;
+    rememberNonce(order.owner, order.nonce);
     persist();
     emit("book");
-    return { ok: true, order: publicOrder(order) };
+    return { ok: true, order: publicOrder(order), onChain: ONCHAIN_CANCEL_NOTE };
   });
 }
 
 export async function balances(accountRaw: string) {
   await boot();
-  const account = accountRaw.toLowerCase();
-  if (!isImplicitAccount(account)) throw new EngineError(400, "Account must be a 64-character implicit account id");
+  const account = requireBookAccount(accountRaw);
   const tokenIds = [USDC_ASSET, ...Object.values(PAIRS).map((pair) => pair.baseAsset)];
   const values = await batchBalances(account, tokenIds);
   if (!values) throw new EngineError(502, "Balance query failed");
@@ -973,14 +1069,26 @@ export async function balances(accountRaw: string) {
   };
 }
 
-export async function quoteDeposit(input: { amount: string; account: string; refundTo: string }) {
+export async function quoteDeposit(input: {
+  amount: string;
+  account: string;
+  refundTo: string;
+  dry?: boolean;
+  originAsset?: string;
+}) {
   await boot();
-  const account = input.account.toLowerCase();
-  if (!isImplicitAccount(account)) throw new EngineError(400, "Account must be a 64-character implicit account id");
+  const account = requireBookAccount(input.account);
   if (!isEvmAddress(input.refundTo)) throw new EngineError(400, "Refund address must be an 0x EVM address");
+  const dry = input.dry !== false;
   try {
-    const quote = await depositQuote({ usdcAmount: input.amount, intentsAccount: account, refundTo: input.refundTo });
-    return { ok: true, dry: true, quote };
+    const quote = await depositQuote({
+      usdcAmount: input.amount,
+      intentsAccount: account,
+      refundTo: input.refundTo,
+      dry,
+      originAsset: input.originAsset,
+    });
+    return { ok: true, dry, quote };
   } catch (error) {
     throw new EngineError(502, error instanceof Error ? error.message : "Quote failed");
   }
@@ -997,8 +1105,7 @@ export async function trackDeposit(depositAddress: string) {
 export async function quoteFallback(input: { pair: string; side: Side; qty: string; account: string }) {
   await boot();
   const pair = requirePair(input.pair);
-  const account = input.account.toLowerCase();
-  if (!isImplicitAccount(account)) throw new EngineError(400, "Account must be a 64-character implicit account id");
+  const account = requireBookAccount(input.account);
   const qty = parseAtoms(input.qty, PAIRS[pair].baseDecimals);
   if (qty == null || qty <= 0n) throw new EngineError(400, "Quantity is not valid");
   try {
@@ -1007,4 +1114,122 @@ export async function quoteFallback(input: { pair: string; side: Side; qty: stri
   } catch (error) {
     throw new EngineError(502, error instanceof Error ? error.message : "Quote failed");
   }
+}
+
+export async function nearDepositTemplate(input: { tokenContract: string; amount: string; owner?: string }) {
+  await boot();
+  return nearDepositCall(input);
+}
+
+export async function withdrawPreview(input: {
+  account: string;
+  tokenId: string;
+  receiverId: string;
+  amount: string;
+  chain: "near" | "other";
+  destinationAsset?: string;
+  dry?: boolean;
+}) {
+  await boot();
+  const account = requireBookAccount(input.account);
+  const protocol = requireProtocol();
+  const deadline = iso(Date.now() + 10 * 60 * 1000);
+  const intent = withdrawIntent({
+    tokenId: input.tokenId,
+    receiverId: input.receiverId,
+    amount: input.amount,
+    memo: "intentbook:withdraw",
+  });
+  const nep413 = JSON.stringify({ signer_id: account, deadline, intents: [intent] });
+  const nonce = bytesToBase64(makeNonce(protocol.salt));
+  const standard = signingStandard(account);
+  let quote: unknown = null;
+  let quoteError: string | null = null;
+  if (input.chain === "other") {
+    try {
+      quote = await withdrawQuote({
+        usdcAmount: formatAtoms(BigInt(input.amount), 6, 6),
+        intentsAccount: account,
+        destinationAsset: input.destinationAsset || input.tokenId,
+        recipient: input.receiverId,
+        dry: input.dry !== false,
+      });
+    } catch (error) {
+      quoteError = error instanceof Error ? error.message : "Withdraw quote failed";
+    }
+  }
+  return {
+    account,
+    standard,
+    nonce,
+    message: standard === "erc191" ? erc191FromNep413Message(nep413, nonce) : nep413,
+    intent,
+    quote,
+    quoteError,
+    note: "Signing this withdraw does not broadcast it. Submit it to simulate, and live mode broadcasts only after the safety checks pass.",
+  };
+}
+
+export async function withdrawSubmit(input: { account: string; signed: SignedIntent }) {
+  await boot();
+  const account = requireBookAccount(input.account);
+  if (!verifyUserSignature(input.signed, account)) throw new EngineError(400, "Signature did not verify");
+  const protocol = requireProtocol();
+  if (saltOf(input.signed) !== protocol.salt) throw new EngineError(400, "Nonce salt is stale");
+  const simulate = await simulateIntents([input.signed]);
+  const verdict = interpretSimulation(simulate);
+  const decision = executionDecision({
+    live: liveRequested(),
+    verdict: verdict.kind,
+    baseQty: 1n,
+    lot: 1n,
+    quoteQty: 1n,
+    relayerConfigured: relayerConfigured(),
+  });
+  if (!decision.broadcast) {
+    return { ok: verdict.kind !== "rejected", broadcast: false, verdict: verdict.kind, simulate, note: decision.reason };
+  }
+  const tx = await broadcastExecute([input.signed]);
+  rememberNonce(account, intentNonce(input.signed));
+  return { ok: true, broadcast: true, txHash: tx.txHash, explorer: `https://nearblocks.io/txns/${tx.txHash}`, simulate };
+}
+
+export async function burnPreview(input: { id: string; account: string }) {
+  await boot();
+  const account = requireBookAccount(input.account);
+  const order = memory().orders.find((item) => item.id === input.id && sameAccount(item.owner, account));
+  if (!order) throw new EngineError(404, "Order not found for this account");
+  const deadline = iso(Date.now() + 10 * 60 * 1000);
+  const nep413 = emptyIntentMessage(account, deadline);
+  const standard = signingStandard(account);
+  return {
+    id: order.id,
+    nonce: order.nonce,
+    standard,
+    message: standard === "erc191" ? erc191FromNep413Message(nep413, order.nonce) : nep413,
+    note: ONCHAIN_CANCEL_NOTE,
+  };
+}
+
+export async function burnSubmit(input: { id: string; account: string; signed: SignedIntent }) {
+  await boot();
+  const preview = await burnPreview({ id: input.id, account: input.account });
+  if (intentMessage(input.signed) !== preview.message) throw new EngineError(400, "Burn signature does not match this order nonce");
+  if (!verifyUserSignature(input.signed, requireBookAccount(input.account))) throw new EngineError(400, "Signature did not verify");
+  const simulate = await simulateIntents([input.signed]);
+  const verdict = interpretSimulation(simulate);
+  const decision = executionDecision({
+    live: liveRequested(),
+    verdict: verdict.kind,
+    baseQty: 1n,
+    lot: 1n,
+    quoteQty: 0n,
+    relayerConfigured: relayerConfigured(),
+  });
+  if (!decision.broadcast) {
+    return { ok: false, broadcast: false, verdict: verdict.kind, simulate, note: `${decision.reason} ${ONCHAIN_CANCEL_NOTE}` };
+  }
+  const tx = await broadcastExecute([input.signed]);
+  rememberNonce(requireBookAccount(input.account), preview.nonce);
+  return { ok: true, broadcast: true, txHash: tx.txHash, explorer: `https://nearblocks.io/txns/${tx.txHash}` };
 }

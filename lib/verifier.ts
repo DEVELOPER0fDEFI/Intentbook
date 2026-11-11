@@ -1,5 +1,5 @@
 import { INTENTS_CONTRACT } from "./assets";
-import type { SignedNep413 } from "./types";
+import type { SignedIntent } from "./types";
 
 function rpcUrls(): string[] {
   const urls = [process.env.NEAR_RPC_URL, "https://rpc.mainnet.near.org", "https://rpc.fastnear.com"].filter(
@@ -75,7 +75,7 @@ export async function protocolState(): Promise<{ feePips: number; salt: string; 
   return { feePips: fee, salt, feeCollector };
 }
 
-export async function simulateIntents(signed: SignedNep413[]): Promise<unknown> {
+export async function simulateIntents(signed: SignedIntent[]): Promise<unknown> {
   return viewCall("simulate_intents", { signed });
 }
 

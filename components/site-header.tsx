@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { loadDemoKey } from "@/lib/demo-wallet";
 import { nearblocksAccount, shortAccount } from "@/lib/format";
 import { cn } from "@/lib/cn";
+import { useWallet } from "@/components/wallet";
 
 const links = [
   { href: "/", label: "Trade" },
@@ -16,17 +16,21 @@ const links = [
 
 export function SiteHeader() {
   const pathname = usePathname();
-  const [account, setAccount] = useState("");
+  const wallet = useWallet();
   const [fee, setFee] = useState<string>("");
+  const [takerFee, setTakerFee] = useState("");
   const [salt, setSalt] = useState("");
+  const [live, setLive] = useState("off");
+  const account = wallet.session?.accountId ?? "";
 
   useEffect(() => {
-    setAccount(loadDemoKey().accountId);
     fetch("/api/v1/health")
       .then((res) => res.json())
       .then((data) => {
         if (data.feePips != null) setFee(String(data.feePips));
+        if (data.takerFeeBps != null) setTakerFee(String(data.takerFeeBps));
         if (data.salt) setSalt(data.salt);
+        if (data.liveExecution) setLive(String(data.liveExecution));
       })
       .catch(() => undefined);
   }, []);
@@ -56,10 +60,19 @@ export function SiteHeader() {
           })}
         </nav>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <span className="rounded-full bg-lime px-2.5 py-1 text-[11px] font-medium text-background">DRY-RUN</span>
+          <span className="rounded-full bg-lime px-2.5 py-1 text-[11px] font-medium text-background">{live === "off" ? "DRY-RUN" : `LIVE ${live}`}</span>
+          <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.connectNear()} disabled={wallet.busy}>
+            NEAR wallet
+          </button>
+          <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.connectEvm()} disabled={wallet.busy}>
+            MetaMask
+          </button>
+          <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => wallet.useDemo()}>
+            Demo key
+          </button>
           {account ? (
             <a className="nums text-xs text-muted hover:text-ink" href={nearblocksAccount(account)}>
-              {shortAccount(account)}
+              {wallet.session?.kind ?? "demo"} {shortAccount(account)}
             </a>
           ) : (
             <span className="text-xs text-muted">Preparing demo key</span>
@@ -68,10 +81,12 @@ export function SiteHeader() {
       </div>
       <div className="border-t border-line/70 bg-panel/60">
         <p className="mx-auto max-w-7xl px-4 py-2 text-xs text-muted">
-          Dry-run is on. Signatures are real NEP-413 payloads. Matches call simulate_intents on mainnet intents.near.
-          Nothing calls execute_intents.
+          {live === "off" ? "Dry-run is on. execute_intents is not called." : "Live mode is armed. A failed simulation is refused."}{" "}
+          Sign with a NEAR wallet, MetaMask, or the demo key.
+          {takerFee ? ` Taker fee ${takerFee} bps. Maker fee 0.` : ""}
           {fee ? ` Protocol fee ${fee} pip.` : ""}
           {salt ? ` Salt ${salt}.` : ""}
+          {wallet.error ? ` ${wallet.error}` : ""}
         </p>
       </div>
     </header>

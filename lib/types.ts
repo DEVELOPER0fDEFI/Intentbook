@@ -4,8 +4,9 @@ export type PairId = (typeof PAIR_IDS)[number];
 export type Side = "BUY" | "SELL";
 export type OrderType = "LIMIT" | "MARKET";
 export type OrderStatus = "OPEN" | "FILLED" | "CANCELLED" | "EXPIRED" | "DEAD";
-export type FillStatus = "SIMULATED" | "FAILED";
-export type Settlement = "unfunded" | "executed" | "rejected";
+export type FillStatus = "SIMULATED" | "FAILED" | "SETTLED";
+export type Settlement = "unfunded" | "executed" | "rejected" | "broadcast";
+export type SignStandard = "nep413" | "erc191";
 
 export interface SignedNep413 {
   standard: "nep413";
@@ -18,6 +19,14 @@ export interface SignedNep413 {
   signature: string;
 }
 
+export interface SignedErc191 {
+  standard: "erc191";
+  payload: string;
+  signature: string;
+}
+
+export type SignedIntent = SignedNep413 | SignedErc191;
+
 export interface StoredOrder {
   id: string;
   pair: PairId;
@@ -29,7 +38,7 @@ export interface StoredOrder {
   quoteQty: string;
   owner: string;
   role: "user" | "mm";
-  signed: SignedNep413;
+  signed: SignedIntent;
   nonce: string;
   deadline: string;
   createdAt: string;
@@ -58,15 +67,19 @@ export interface Fill {
   createdAt: string;
   fallback: unknown | null;
   fallbackError: string | null;
+  takerFee?: string;
+  txHash?: string;
 }
 
 export interface PreparedLeg {
   message: string;
   nonce: string;
   recipient: "intents.near";
+  standard: SignStandard;
   baseQty: string;
   quoteQty: string;
   price: string;
+  fee: string;
   deadline: string;
   lotIds?: string[];
 }

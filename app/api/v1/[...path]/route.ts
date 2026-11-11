@@ -1,6 +1,6 @@
-import { EngineError, balances, book, boot, cancel, commit, health, orders, preview, quoteDeposit, quoteFallback, subscribe, ticker, trackDeposit, trades } from "@/lib/engine";
+import { EngineError, balances, book, boot, burnPreview, burnSubmit, cancel, commit, health, nearDepositTemplate, orders, preview, quoteDeposit, quoteFallback, subscribe, ticker, trackDeposit, trades, withdrawPreview, withdrawSubmit } from "@/lib/engine";
 import { json, options, run } from "@/lib/http";
-import type { Side, SignedNep413 } from "@/lib/types";
+import type { Side, SignedIntent } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -55,8 +55,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ path?: string[
     if (name === "orders") {
       return commit({
         previewId: String(body.previewId ?? ""),
-        take: (body.take as SignedNep413 | null | undefined) ?? null,
-        rest: (body.rest as SignedNep413 | null | undefined) ?? null,
+        take: (body.take as SignedIntent | null | undefined) ?? null,
+        rest: (body.rest as SignedIntent | null | undefined) ?? null,
       });
     }
     if (name === "orders/cancel") return cancel({ id: String(body.id ?? ""), account: String(body.account ?? "") });
@@ -65,6 +65,39 @@ export async function POST(req: Request, ctx: { params: Promise<{ path?: string[
         amount: String(body.amount ?? ""),
         account: String(body.account ?? ""),
         refundTo: String(body.refundTo ?? ""),
+        dry: body.dry === false ? false : true,
+        originAsset: body.originAsset == null ? undefined : String(body.originAsset),
+      });
+    }
+    if (name === "near-deposit") {
+      return nearDepositTemplate({
+        tokenContract: String(body.tokenContract ?? "wrap.near"),
+        amount: String(body.amount ?? ""),
+        owner: body.owner == null ? undefined : String(body.owner),
+      });
+    }
+    if (name === "withdraw/preview") {
+      return withdrawPreview({
+        account: String(body.account ?? ""),
+        tokenId: String(body.tokenId ?? ""),
+        receiverId: String(body.receiverId ?? ""),
+        amount: String(body.amount ?? ""),
+        chain: body.chain === "other" ? "other" : "near",
+        destinationAsset: body.destinationAsset == null ? undefined : String(body.destinationAsset),
+        dry: body.dry === false ? false : true,
+      });
+    }
+    if (name === "withdraw") {
+      return withdrawSubmit({ account: String(body.account ?? ""), signed: body.signed as SignedIntent });
+    }
+    if (name === "orders/burn-preview") {
+      return burnPreview({ id: String(body.id ?? ""), account: String(body.account ?? "") });
+    }
+    if (name === "orders/burn") {
+      return burnSubmit({
+        id: String(body.id ?? ""),
+        account: String(body.account ?? ""),
+        signed: body.signed as SignedIntent,
       });
     }
     if (name === "quote") {

@@ -12,6 +12,12 @@
     "demo:dry": "tsx scripts/demo-dry.ts"
   },
   "dependencies": {
+    "@near-wallet-selector/core": "^8.10.2",
+    "@near-wallet-selector/here-wallet": "^8.10.2",
+    "@near-wallet-selector/hot-wallet": "^8.10.2",
+    "@near-wallet-selector/meteor-wallet": "^8.10.2",
+    "@near-wallet-selector/modal-ui": "^8.10.2",
+    "@near-wallet-selector/my-near-wallet": "^8.10.2",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^1.8.0",
     "@radix-ui/react-dialog": "^1.3.1",
@@ -21,6 +27,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.72.0",
+    "near-api-js": "^5.1.1",
     "next": "15.5.29",
     "react": "19.1.0",
     "react-dom": "19.1.0",

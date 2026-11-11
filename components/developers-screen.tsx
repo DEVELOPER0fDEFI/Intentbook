@@ -11,7 +11,8 @@ export function DevelopersScreen() {
 curl http://127.0.0.1:43123/api/v1/trades?pair=BTC-USDC
 curl http://127.0.0.1:43123/api/v1/ticker
 curl http://127.0.0.1:43123/api/v1/health`}</pre>
-      <table className="w-full text-left text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[640px] text-left text-sm">
         <thead className="text-xs uppercase tracking-wide text-muted">
           <tr>
             <th className="py-2">Method</th>
@@ -30,7 +31,11 @@ curl http://127.0.0.1:43123/api/v1/health`}</pre>
             ["POST", "/api/v1/orders/preview", "Unsigned token_diff to sign"],
             ["POST", "/api/v1/orders", "Signed payload, then simulate"],
             ["POST", "/api/v1/orders/cancel", "Soft cancel"],
-            ["POST", "/api/v1/deposit-quote", "1Click dry quote"],
+            ["POST", "/api/v1/deposit-quote", "1Click quote, dry by default"],
+            ["POST", "/api/v1/near-deposit", "Unsigned ft_transfer_call template"],
+            ["POST", "/api/v1/withdraw/preview", "Unsigned ft_withdraw"],
+            ["POST", "/api/v1/withdraw", "Simulate, then live gate"],
+            ["POST", "/api/v1/orders/burn-preview", "Empty intent for the order nonce"],
             ["GET", "/api/v1/status?depositAddress=", "1Click status"],
           ].map(([method, path, what]) => (
             <tr key={path} className="border-t border-line">
@@ -41,6 +46,7 @@ curl http://127.0.0.1:43123/api/v1/health`}</pre>
           ))}
         </tbody>
       </table>
+      </div>
       <p className="text-sm text-muted">
         Read routes send Access-Control-Allow-Origin: *. A browser on another origin can fetch the book. Settlement stays a signed intent
         batch, not a custodial transfer.

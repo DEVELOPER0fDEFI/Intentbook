@@ -171,7 +171,7 @@ export function signEmptyIntent(secretKey: Uint8Array, saltHex: string, deadline
   return signExisting({ secretKey, message, nonceBase64: bytesToBase64(nonce) });
 }
 
-export function verifySigned(signed: SignedNep413): boolean {
+export function verifyNep413Crypto(signed: SignedNep413): boolean {
   try {
     if (signed.standard !== "nep413") return false;
     if (signed.payload.recipient !== "intents.near") return false;
@@ -182,9 +182,26 @@ export function verifySigned(signed: SignedNep413): boolean {
     const nonce = base64ToBytes(signed.payload.nonce);
     if (nonce.length !== 32) return false;
     const hash = nep413Hash(signed.payload.message, nonce, signed.payload.recipient);
-    if (!ed25519.verify(signature, hash, publicKey)) return false;
+    return ed25519.verify(signature, hash, publicKey);
+  } catch {
+    return false;
+  }
+}
+
+export function implicitAccountOf(signed: SignedNep413): string | null {
+  try {
+    const publicKey = bs58.decode(signed.public_key.slice("ed25519:".length));
+    return bytesToHex(publicKey);
+  } catch {
+    return null;
+  }
+}
+
+export function verifySigned(signed: SignedNep413): boolean {
+  if (!verifyNep413Crypto(signed)) return false;
+  try {
     const parsed = JSON.parse(signed.payload.message) as { signer_id?: string };
-    return parsed.signer_id === bytesToHex(publicKey);
+    return parsed.signer_id === implicitAccountOf(signed);
   } catch {
     return false;
   }

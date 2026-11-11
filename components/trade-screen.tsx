@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { PAIRS } from "@/lib/assets";
 import type { PairId } from "@/lib/types";
-import { loadDemoKey, signExisting } from "@/lib/demo-wallet";
+import { useWallet } from "@/components/wallet";
 import { parsePlain } from "@/lib/parse";
 import { shortAccount } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -39,9 +39,11 @@ interface Point {
 interface PreviewLeg {
   message: string;
   nonce: string;
+  standard: "nep413" | "erc191";
   baseQty: string;
   quoteQty: string;
   price: string;
+  fee: string;
   deadline: string;
 }
 
@@ -69,7 +71,8 @@ export function TradeScreen() {
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<Preview | null>(null);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
-  const [account, setAccount] = useState("");
+  const wallet = useWallet();
+  const account = wallet.session?.accountId ?? "";
 
   async function refresh(next = pair) {
     const [bookRes, tickerRes, tradeRes] = await Promise.all([
@@ -91,7 +94,6 @@ export function TradeScreen() {
   }
 
   useEffect(() => {
-    setAccount(loadDemoKey().accountId);
     refresh().catch(() => setError("The book API is not responding yet."));
     const timer = setInterval(() => refresh().catch(() => undefined), 2500);
     const stream = new EventSource("/api/v1/stream");
@@ -128,13 +130,13 @@ export function TradeScreen() {
     setBusy(true);
     setError("");
     try {
-      const key = loadDemoKey();
+      if (!account) throw new Error("Choose the demo key or connect a wallet first");
       const limit = price || (side === "BUY" ? book?.bestAsk : book?.bestBid) || "";
       const previewRes = await fetch("/api/v1/orders/preview", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          account: key.accountId,
+          account,
           pair,
           side,
           orderType,
@@ -147,20 +149,8 @@ export function TradeScreen() {
       setDraft(preview);
       if (!sign) return;
       const body: Record<string, unknown> = { previewId: preview.previewId };
-      if (preview.take) {
-        body.take = signExisting({
-          secretKey: key.secretKey,
-          message: preview.take.message,
-          nonceBase64: preview.take.nonce,
-        });
-      }
-      if (preview.rest) {
-        body.rest = signExisting({
-          secretKey: key.secretKey,
-          message: preview.rest.message,
-          nonceBase64: preview.rest.nonce,
-        });
-      }
+      if (preview.take) body.take = await wallet.signLeg(preview.take);
+      if (preview.rest) body.rest = await wallet.signLeg(preview.rest);
       const placed = await fetch("/api/v1/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -238,7 +228,8 @@ export function TradeScreen() {
             <span className="text-right">Size</span>
             <span className="text-right">Total USDC</span>
           </div>
-          {asks.length === 0 && (book?.bids.length ?? 0) === 0 ? (
+          {!book ? <p className="px-2 py-8 text-sm text-muted">Loading the book.</p> : null}
+          {book && asks.length === 0 && book.bids.length === 0 ? (
             <p className="px-2 py-8 text-sm text-muted">The book is quiet. Reference prices load the maker ladder.</p>
           ) : null}
           <div className="space-y-0.5">
@@ -316,7 +307,7 @@ export function TradeScreen() {
               ))}
               {draft.take ? (
                 <p>
-                  Take {draft.take.baseQty} at {draft.take.price}, paying {draft.take.quoteQty} USDC.
+                  Take {draft.take.baseQty} at {draft.take.price} for {draft.take.quoteQty} USDC. Taker fee {draft.take.fee} USDC. Maker fee 0.
                 </p>
               ) : null}
               {draft.rest ? (
