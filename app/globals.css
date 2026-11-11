@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: #101410;
+  --color-panel: #171c18;
+  --color-panel-2: #222a24;
+  --color-ink: #f4f1e8;
+  --color-muted: #a3ab9f;
+  --color-line: #313a33;
+  --color-bid: #3dcf8e;
+  --color-ask: #ff6b57;
+  --color-lime: #d6f25c;
+  --color-gold: #e2b15a;
+  --font-sans: var(--font-outfit), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-plex), ui-monospace, monospace;
+}
+
+html,
+body {
+  background: #101410;
+  color: #f4f1e8;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-outfit), ui-sans-serif, sans-serif;
+}
+
+.font-display {
+  font-family: var(--font-fraunces), Georgia, serif;
+}
+
+.nums {
+  font-family: var(--font-plex), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: #d6f25c;
+  color: #101410;
+}
