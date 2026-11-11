@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { accountKind, sameAccount } from "./accounts";
+import { activeFeeSchedule } from "./app-fees";
+import { priceEdge, readQuoteAmounts, walkBook } from "./compare";
 import { PAIRS, USDC_ASSET, USDC_CONTRACT } from "./assets";
 import { ONCHAIN_CANCEL_NOTE, nearDepositCall, withdrawIntent } from "./chain";
 import { closureForDeltas } from "./closure";
@@ -1232,4 +1234,61 @@ export async function burnSubmit(input: { id: string; account: string; signed: S
   const tx = await broadcastExecute([input.signed]);
   rememberNonce(requireBookAccount(input.account), preview.nonce);
   return { ok: true, broadcast: true, txHash: tx.txHash, explorer: `https://nearblocks.io/txns/${tx.txHash}` };
+}
+
+export async function priceCompare(input: { pair: string; side: Side; qty: string; account?: string }) {
+  await boot();
+  const pair = requirePair(input.pair);
+  const spec = PAIRS[pair];
+  const qty = parseAtoms(input.qty, spec.baseDecimals);
+  if (qty == null || qty <= 0n) throw new EngineError(400, "Quantity is not valid");
+  const side: Side = input.side === "SELL" ? "SELL" : "BUY";
+  const ladder = levels(pair, side === "BUY" ? "SELL" : "BUY");
+  const walked = walkBook({
+    side,
+    qty,
+    levels: ladder.map((level) => ({ priceAtoms: BigInt(level.priceAtoms), qtyAtoms: BigInt(level.qtyAtoms) })),
+    baseDecimals: spec.baseDecimals,
+    takerFeeBps: TAKER_FEE_BPS,
+  });
+  const schedule = activeFeeSchedule();
+  const account = input.account && accountKind(input.account) !== "invalid" ? requireBookAccount(input.account) : "0".repeat(64);
+  let oneclick: unknown = null;
+  let oneclickError: string | null = null;
+  try {
+    oneclick = await fallbackQuote({ pair, side, baseQty: qty, account });
+  } catch (error) {
+    oneclickError = error instanceof Error ? error.message : "1Click quote failed";
+  }
+  const amounts = readQuoteAmounts(oneclick);
+  const other = side === "BUY" ? amounts.amountIn : amounts.amountOut;
+  const edge = priceEdge({ side, bookQuote: walked.total, otherQuote: other });
+  return {
+    pair,
+    side,
+    qty: input.qty,
+    book: {
+      filled: formatAtoms(walked.filled, spec.baseDecimals, 8),
+      unfilled: formatAtoms(walked.unfilled, spec.baseDecimals, 8),
+      quote: formatUsd(walked.quote),
+      fee: formatUsd(walked.fee),
+      total: formatUsd(walked.total),
+      totalAtoms: walked.total.toString(),
+    },
+    oneclick: {
+      total: other > 0n ? formatUsd(other) : null,
+      totalAtoms: other.toString(),
+      amountInFormatted: amounts.amountInFormatted,
+      amountOutFormatted: amounts.amountOutFormatted,
+      error: oneclickError,
+    },
+    savings: {
+      quote: formatUsd(edge.delta < 0n ? -edge.delta : edge.delta),
+      quoteAtoms: edge.delta.toString(),
+      bps: edge.bps.toString(),
+      bookBetter: edge.bookBetter,
+      label: edge.bookBetter ? "IntentBook book price is better" : other > 0n ? "1Click price is better" : "1Click quote is not available",
+    },
+    fees: schedule,
+  };
 }

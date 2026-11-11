@@ -1,3 +1,4 @@
+import { activeFeeSchedule, configuredAppFees } from "./app-fees";
 import {
   BASE_USDC_ASSET,
   ONECLICK_BASE,
@@ -117,13 +118,16 @@ export interface QuoteRequest {
   refundTo: string;
   refundType: "ORIGIN_CHAIN" | "INTENTS";
   deadline: string;
+  appFees?: { recipient: string; fee: number }[];
 }
 
 export async function oneclickQuote(request: QuoteRequest): Promise<unknown> {
+  const appFees = request.appFees ?? configuredAppFees();
+  const body = appFees.length > 0 ? { ...request, appFees } : request;
   const res = await fetch(`${oneclickBase()}/v0/quote`, {
     method: "POST",
     headers: oneclickHeaders(),
-    body: JSON.stringify(request),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(20000),
   });
   const text = await res.text();
@@ -242,6 +246,8 @@ export async function fallbackQuote(input: {
     deadline: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
 }
+
+export { activeFeeSchedule, configuredAppFees };
 
 export async function depositStatus(depositAddress: string): Promise<unknown> {
   const url = new URL(`${oneclickBase()}/v0/status`);

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { PAIRS } from "@/lib/assets";
 import type { PairId } from "@/lib/types";
+import { PriceCompare } from "@/components/price-compare";
 import { useWallet } from "@/components/wallet";
 import { parsePlain } from "@/lib/parse";
 import { shortAccount } from "@/lib/format";
@@ -187,6 +188,8 @@ export function TradeScreen() {
           </button>
         ))}
       </div>
+
+      <PriceCompare pair={pair} side={side} qty={qty} />
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(260px,0.85fr)_minmax(300px,0.95fr)]">
         <section className="order-2 space-y-4 lg:order-1">

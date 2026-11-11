@@ -1,4 +1,4 @@
-import { EngineError, balances, book, boot, burnPreview, burnSubmit, cancel, commit, health, nearDepositTemplate, orders, preview, quoteDeposit, quoteFallback, subscribe, ticker, trackDeposit, trades, withdrawPreview, withdrawSubmit } from "@/lib/engine";
+import { EngineError, balances, book, boot, burnPreview, burnSubmit, cancel, commit, health, nearDepositTemplate, orders, preview, priceCompare, quoteDeposit, quoteFallback, subscribe, ticker, trackDeposit, trades, withdrawPreview, withdrawSubmit } from "@/lib/engine";
 import { json, options, run } from "@/lib/http";
 import type { Side, SignedIntent } from "@/lib/types";
 
@@ -32,6 +32,14 @@ export async function GET(req: Request, ctx: { params: Promise<{ path?: string[]
     }
     if (name === "balances") return balances(url.searchParams.get("account") || "");
     if (name === "status") return trackDeposit(url.searchParams.get("depositAddress") || "");
+    if (name === "compare") {
+      return priceCompare({
+        pair: url.searchParams.get("pair") || "BTC-USDC",
+        side: url.searchParams.get("side") === "SELL" ? "SELL" : "BUY",
+        qty: url.searchParams.get("qty") || "0.0001",
+        account: url.searchParams.get("account") || undefined,
+      });
+    }
     throw new EngineError(404, "Unknown API path");
   });
 }
