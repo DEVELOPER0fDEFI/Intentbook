@@ -184,11 +184,19 @@ export function createBookStore(db: DatabaseSync): BookStore {
 
 let singleton: BookStore | null = null;
 
+export function sqliteFilePath(): string {
+  return process.env.SQLITE_PATH || path.join(process.cwd(), ".data", "intentbook.sqlite");
+}
+
+export function ensureSqliteDir(): string {
+  const file = sqliteFilePath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  return file;
+}
+
 export function bookStore(): BookStore {
   if (singleton) return singleton;
-  const file = process.env.SQLITE_PATH || path.join(process.cwd(), ".data", "intentbook.sqlite");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  singleton = createBookStore(new DatabaseSync(file));
+  singleton = createBookStore(new DatabaseSync(ensureSqliteDir()));
   return singleton;
 }
 

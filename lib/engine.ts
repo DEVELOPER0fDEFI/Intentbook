@@ -30,7 +30,7 @@ import {
   bytesToBase64,
   makeNonce,
   nonceRejected,
-  useLegacyNonces,
+  enableLegacyNonces,
   type DemoKey,
 } from "./nep413";
 import { depositQuote, depositStatus, fallbackQuote, referencePrices, rheaSwapQuote, withdrawQuote, type ReferencePrice } from "./quotes";
@@ -524,7 +524,7 @@ async function settleUnlocked(input: {
     relayerConfigured: relayerConfigured(),
   });
   if (liveRequested() && !decision.broadcast) {
-    if (nonceRejected(verdict.message)) useLegacyNonces();
+    if (nonceRejected(verdict.message)) enableLegacyNonces();
     fill.status = "FAILED";
     fill.settlement = "rejected";
     fill.note = decision.reason;
@@ -550,7 +550,7 @@ async function settleUnlocked(input: {
   }
   if (verdict.kind === "rejected") {
     if (nonceRejected(verdict.message)) {
-      useLegacyNonces();
+      enableLegacyNonces();
       fill.note = `${fill.note} Nonce format was rejected. The next order uses the legacy nonce.`;
     }
     state.fills.push(fill);
@@ -619,7 +619,7 @@ async function bootInner() {
     state.authProbe = await simulateIntents([probe]);
     const probeVerdict = interpretSimulation(state.authProbe);
     if (probeVerdict.kind === "rejected" && nonceRejected(probeVerdict.message)) {
-      useLegacyNonces();
+      enableLegacyNonces();
       probe = signEmptyIntent(state.operator.secretKey, state.salt!, deadline);
       state.authProbe = await simulateIntents([probe]);
     }

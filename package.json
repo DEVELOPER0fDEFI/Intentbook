@@ -3,10 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev --turbopack -H 0.0.0.0 -p 43123",
     "build": "next build --turbopack",
-    "start": "next start -H 0.0.0.0 -p 43123",
+    "start": "tsx server.ts",
     "lint": "eslint",
     "test": "node --import tsx --test test/*.test.ts",
     "demo:dry": "tsx scripts/demo-dry.ts"
@@ -28,6 +31,7 @@
     "clsx": "^2.1.1",
     "lucide-react": "^1.72.0",
     "near-api-js": "^5.1.1",
+    "tsx": "^4.23.15",
     "next": "15.5.29",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -44,7 +48,6 @@
     "eslint": "^9",
     "eslint-config-next": "15.5.29",
     "tailwindcss": "^4",
-    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

@@ -72,7 +72,7 @@ Versioned under `/api/v1`. The machine-readable description is `/openapi.json`. 
 
 Reads: book, grouped depth, candles (`1m`, `5m`, `1h`, `1d`), trades, ticker, account orders/fills/balances, compare, and best quote across the book, 1Click, and Rhea.
 
-Writes: preview, place signed order, signed cancel, webhook registration. Webhooks send `X-IntentBook-Signature` as hex HMAC-SHA256 of the body. Failures retry at 1s, 5s, 30s, 2m, and 10m, then stop. SSE is `GET /api/v1/stream?pair=BTC-USDC`. WebSocket is `ws://127.0.0.1:43124?pair=BTC-USDC`.
+Writes: preview, place signed order, signed cancel, webhook registration. Webhooks send `X-IntentBook-Signature` as hex HMAC-SHA256 of the body. Failures retry at 1s, 5s, 30s, 2m, and 10m, then stop. SSE is `GET /api/v1/stream?pair=BTC-USDC`. WebSocket is `ws://<host>/api/v1/ws?pair=BTC-USDC` on the same port as HTTP.
 
 Embed with:
 
@@ -132,7 +132,7 @@ Pairs: `BTC-USDC`, `ETH-USDC`, `SOL-USDC`, `NEAR-USDC`. Asset ids are loaded fro
 | `ONECLICK_APP_FEE_BPS` | No | Extra app fee in basis points. Attached only when `ONECLICK_JWT` is set. Split 50/50, and 1Click keeps at least 20 bps. |
 | `ONECLICK_APP_FEE_RECIPIENT` | No | Intents account that receives the app fee. Also required before the fee is attached. |
 | `REFERRER_SHARE_BPS` | No | Share of the taker fee credited to an embed referrer. Default 5000 (50%). |
-| `INTENTBOOK_WS_PORT` | No | WebSocket port. Default 43124. Set `INTENTBOOK_WS=0` to disable it. |
+| `PORT` | No | HTTP and WebSocket port. Railway sets this. Fallback 43123. |
 | `INTENTBOOK_NONCE` | No | Set to `legacy` to force the old 4-byte salt nonce. Default is the versioned `5628f6c6` nonce. |
 | `NEAR_RPC_URL` | No | Defaults to `https://rpc.mainnet.near.org`, then `https://rpc.fastnear.com`. |
 | `INTENTS_CONTRACT` | No | Defaults to `intents.near`. |
@@ -140,11 +140,36 @@ Pairs: `BTC-USDC`, `ETH-USDC`, `SOL-USDC`, `NEAR-USDC`. Asset ids are loaded fro
 | `MM_INTERVAL_MS` | No | Maker refresh. Default 45000. |
 | `SQLITE_PATH` | No | Default `.data/intentbook.sqlite`. |
 
-## Deploy
+## Deploy to Railway
 
-`vercel.json` selects the Next.js framework. `npm run build` then `npm start` also works on a VM.
+`railway.json` builds with `npm run build` and starts with `npm start`. The process listens on `0.0.0.0` and `$PORT` (fallback 43123). HTTP, SSE, and the WebSocket upgrade for `/api/v1/ws` share that one port. The healthcheck path is `/api/v1/health`.
 
-Vercel serverless disks are ephemeral. SQLite there lasts only as long as the instance. For a durable hosted book, set `SQLITE_PATH` on a persistent volume or run `next start` on a VM. Do not set `INTENTBOOK_LIVE=1` on a public deploy until the relayer account is funded and the size caps are acceptable.
+Attach a volume mounted at `/data` and set:
+
+```text
+SQLITE_PATH=/data/intentbook.db
+```
+
+The directory is created if it is missing. Do not commit secrets.
+
+| Variable | Railway value |
+| --- | --- |
+| `PORT` | Set by Railway. Do not hardcode it. |
+| `SQLITE_PATH` | `/data/intentbook.db` |
+| `ONECLICK_JWT` | Partner JWT. Empty keeps the public 1Click fee and sends no appFees. |
+| `ONECLICK_APP_FEE_BPS` | Optional. Used only when `ONECLICK_JWT` is set. |
+| `ONECLICK_APP_FEE_RECIPIENT` | Optional Intents account for that fee. |
+| `INTENTBOOK_LIVE` | Leave unset or `0`. `1` arms `execute_intents`. |
+| `NEAR_RELAYER_ACCOUNT` | Only if live mode is armed. |
+| `NEAR_RELAYER_PRIVATE_KEY` | Only if live mode is armed. Never commit it. |
+| `NEAR_RPC_URL` | Optional. |
+| `INTENTS_CONTRACT` | Optional. Default `intents.near`. |
+| `ONECLICK_BASE` | Optional. |
+| `REFERRER_SHARE_BPS` | Optional. Default 5000. |
+| `MM_INTERVAL_MS` | Optional. Default 45000. |
+| `INTENTBOOK_NONCE` | Optional. `legacy` forces the old nonce. |
+
+`vercel.json` remains for a Vercel build. Serverless disks there are ephemeral, so a durable book belongs on Railway with the volume above. Do not set `INTENTBOOK_LIVE=1` on a public deploy until the relayer account is funded and the size caps are acceptable.
 
 ## Limits
 

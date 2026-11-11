@@ -21,6 +21,7 @@
     "/api/v1/orders/cancel": { "post": { "summary": "Cancel. Public callers send a signed cancel intent." } },
     "/api/v1/webhooks": { "post": { "summary": "Register an HMAC webhook" } },
     "/api/v1/stream": { "get": { "summary": "Server-sent book, trade, and ticker events" } },
+    "/api/v1/ws": { "get": { "summary": "WebSocket upgrade on the same HTTP port. Query pair=BTC-USDC." } },
     "/api/v1/referrers": { "get": { "summary": "Referrer share of taker fees" } }
   }
 }

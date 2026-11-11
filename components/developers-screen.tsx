@@ -4,7 +4,7 @@ export function DevelopersScreen() {
       <div>
         <h1 className="font-display text-4xl">Public API</h1>
         <p className="mt-2 text-sm text-muted">
-          Other apps share this book. Reads need no key. Placing or cancelling an order requires a signature checked on the server. The OpenAPI file is at /openapi.json. WebSocket events are on port 43124. SSE is /api/v1/stream.
+          Other apps share this book. Reads need no key. Placing or cancelling an order requires a signature checked on the server. The OpenAPI file is at /openapi.json. WebSocket is /api/v1/ws on the same port as the site. SSE is /api/v1/stream.
         </p>
       </div>
       <pre className="nums overflow-auto rounded-lg border border-line bg-panel p-4 text-xs leading-6">{`curl http://127.0.0.1:43123/api/v1/book?pair=BTC-USDC
@@ -36,7 +36,7 @@ curl http://127.0.0.1:43123/openapi.json`}</pre>
             ["GET", "/api/v1/quote/best", "Winner across book, 1Click, Rhea"],
             ["GET", "/api/v1/accounts/{account}", "Orders, fills, balances"],
             ["GET", "/api/v1/stream?pair=BTC-USDC", "SSE book, trades, ticker"],
-            ["GET", "ws://127.0.0.1:43124?pair=BTC-USDC", "WebSocket pair stream"],
+            ["GET", "ws://127.0.0.1:43123/api/v1/ws?pair=BTC-USDC", "WebSocket on the HTTP port"],
             ["POST", "/api/v1/orders/preview", "Unsigned token_diff to sign"],
             ["POST", "/api/v1/orders", "Signed payload, then simulate"],
             ["POST", "/api/v1/orders/cancel", "Signed cancel, or session cancel"],

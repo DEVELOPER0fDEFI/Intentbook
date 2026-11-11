@@ -81,7 +81,7 @@ export const VERSIONED_NONCE_MAGIC = "5628f6c6";
 
 let forceLegacyNonces = false;
 
-export function useLegacyNonces() {
+export function enableLegacyNonces() {
   forceLegacyNonces = true;
 }
 

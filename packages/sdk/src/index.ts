@@ -65,6 +65,13 @@ export class IntentBookClient {
     return () => source.close();
   }
 
+  websocket(pair: string, onEvent: (event: unknown) => void) {
+    const wsBase = this.options.baseUrl.replace(/\/$/, "").replace(/^http/, "ws");
+    const socket = new WebSocket(`${wsBase}/api/v1/ws?pair=${encodeURIComponent(pair)}`);
+    socket.addEventListener("message", (message) => onEvent(JSON.parse(String(message.data))));
+    return () => socket.close();
+  }
+
   private async get(path: string) {
     const res = await fetch(this.url(path));
     if (!res.ok) throw new Error(await res.text());
