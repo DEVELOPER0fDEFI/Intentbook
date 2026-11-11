@@ -1,0 +1,116 @@
+import { EngineError, balances, book, boot, cancel, commit, health, orders, preview, quoteDeposit, quoteFallback, subscribe, ticker, trackDeposit, trades } from "@/lib/engine";
+import { json, options, run } from "@/lib/http";
+import type { Side, SignedNep413 } from "@/lib/types";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+export function OPTIONS() {
+  return options();
+}
+
+async function pathOf(ctx: { params: Promise<{ path?: string[] }> }) {
+  const { path = [] } = await ctx.params;
+  return path.join("/");
+}
+
+export async function GET(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
+  const name = await pathOf(ctx);
+  if (name === "stream") return eventStream();
+  const url = new URL(req.url);
+  return run(async () => {
+    if (name === "health") return health();
+    if (name === "ticker") return ticker();
+    if (name === "book") return book(url.searchParams.get("pair") || "BTC-USDC");
+    if (name === "trades") return trades(url.searchParams.get("pair") || undefined);
+    if (name === "orders") {
+      return orders({
+        account: url.searchParams.get("account") || undefined,
+        pair: url.searchParams.get("pair") || undefined,
+        status: url.searchParams.get("status") || undefined,
+      });
+    }
+    if (name === "balances") return balances(url.searchParams.get("account") || "");
+    if (name === "status") return trackDeposit(url.searchParams.get("depositAddress") || "");
+    throw new EngineError(404, "Unknown API path");
+  });
+}
+
+export async function POST(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
+  const name = await pathOf(ctx);
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!body || typeof body !== "object") return json({ error: "JSON body required" }, 400);
+  return run(async () => {
+    if (name === "orders/preview") {
+      return preview({
+        account: String(body.account ?? ""),
+        pair: String(body.pair ?? ""),
+        side: body.side === "SELL" ? "SELL" : "BUY",
+        orderType: body.orderType === "MARKET" ? "MARKET" : "LIMIT",
+        qty: String(body.qty ?? ""),
+        price: body.price == null ? undefined : String(body.price),
+        deadlineSeconds: body.deadlineSeconds == null ? undefined : Number(body.deadlineSeconds),
+      });
+    }
+    if (name === "orders") {
+      return commit({
+        previewId: String(body.previewId ?? ""),
+        take: (body.take as SignedNep413 | null | undefined) ?? null,
+        rest: (body.rest as SignedNep413 | null | undefined) ?? null,
+      });
+    }
+    if (name === "orders/cancel") return cancel({ id: String(body.id ?? ""), account: String(body.account ?? "") });
+    if (name === "deposit-quote") {
+      return quoteDeposit({
+        amount: String(body.amount ?? ""),
+        account: String(body.account ?? ""),
+        refundTo: String(body.refundTo ?? ""),
+      });
+    }
+    if (name === "quote") {
+      const side: Side = body.side === "SELL" ? "SELL" : "BUY";
+      return quoteFallback({
+        pair: String(body.pair ?? ""),
+        side,
+        qty: String(body.qty ?? ""),
+        account: String(body.account ?? ""),
+      });
+    }
+    throw new EngineError(404, "Unknown API path");
+  });
+}
+
+async function eventStream() {
+  await boot();
+  const encoder = new TextEncoder();
+  let unsubscribe = () => {};
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const stream = new ReadableStream({
+    start(controller) {
+      const send = (event: unknown) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      };
+      send({ type: "hello", ts: Date.now() });
+      unsubscribe = subscribe(send);
+      timer = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": ping\n\n"));
+        } catch {
+          if (timer) clearInterval(timer);
+        }
+      }, 15000);
+    },
+    cancel() {
+      unsubscribe();
+      if (timer) clearInterval(timer);
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "access-control-allow-origin": "*",
+    },
+  });
+}

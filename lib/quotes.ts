@@ -1,0 +1,218 @@
+import {
+  BASE_USDC_ASSET,
+  ONECLICK_BASE,
+  PAIRS,
+  RHEA_QUOTE_URL,
+  USDC_ASSET,
+  USDC_CONTRACT,
+  USDC_DECIMALS,
+} from "./assets";
+import { formatAtoms, parseAtoms } from "./format";
+import type { PairId, Side } from "./types";
+
+export interface TokenRow {
+  assetId: string;
+  decimals: number;
+  blockchain: string;
+  symbol: string;
+  price: number;
+  priceUpdatedAt?: string;
+}
+
+let tokenCache: { at: number; rows: TokenRow[] } | null = null;
+
+function oneclickBase(): string {
+  return (process.env.ONECLICK_BASE || ONECLICK_BASE).replace(/\/$/, "");
+}
+
+function oneclickHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const jwt = process.env.ONECLICK_JWT;
+  if (jwt) {
+    headers.authorization = `Bearer ${jwt}`;
+    headers["x-api-key"] = jwt;
+  }
+  return headers;
+}
+
+export async function getTokens(force = false): Promise<TokenRow[]> {
+  if (!force && tokenCache && Date.now() - tokenCache.at < 20_000) return tokenCache.rows;
+  const res = await fetch(`${oneclickBase()}/v0/tokens`, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`1Click tokens failed (${res.status})`);
+  const rows = (await res.json()) as TokenRow[];
+  if (!Array.isArray(rows)) throw new Error("1Click tokens response was not a list");
+  tokenCache = { at: Date.now(), rows };
+  return rows;
+}
+
+export interface ReferencePrice {
+  pair: PairId;
+  midAtoms: bigint;
+  mid: string;
+  source: string;
+  updatedAt?: string;
+  rheaMid?: string;
+}
+
+export async function rheaNearPrice(): Promise<{ atoms: bigint; human: string } | null> {
+  const amountIn = 10n * 10n ** 24n;
+  const url = new URL(RHEA_QUOTE_URL);
+  url.searchParams.set("amountIn", amountIn.toString());
+  url.searchParams.set("tokenIn", "wrap.near");
+  url.searchParams.set("tokenOut", USDC_CONTRACT);
+  url.searchParams.set("slippage", "0.005");
+  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) return null;
+  const json = (await res.json()) as {
+    result_code?: number;
+    result_data?: { amount_out?: string };
+  };
+  if (json.result_code !== 0 || !json.result_data?.amount_out) return null;
+  const out = BigInt(json.result_data.amount_out);
+  const perNear = out / 10n;
+  if (perNear <= 0n) return null;
+  return { atoms: perNear, human: formatAtoms(perNear, USDC_DECIMALS, 4) };
+}
+
+export async function referencePrices(): Promise<ReferencePrice[]> {
+  const tokens = await getTokens();
+  const byId = new Map(tokens.map((row) => [row.assetId, row]));
+  const usdc = byId.get(USDC_ASSET);
+  const usdcPrice = usdc?.price && usdc.price > 0 ? usdc.price : 1;
+  let rhea: { atoms: bigint; human: string } | null = null;
+  try {
+    rhea = await rheaNearPrice();
+  } catch {
+    rhea = null;
+  }
+  const out: ReferencePrice[] = [];
+  for (const spec of Object.values(PAIRS)) {
+    const row = byId.get(spec.baseAsset);
+    if (!row?.price || row.price <= 0) continue;
+    const usd = row.price / usdcPrice;
+    const midAtoms = BigInt(Math.round(usd * 10 ** USDC_DECIMALS));
+    if (midAtoms <= 0n) continue;
+    out.push({
+      pair: spec.id,
+      midAtoms,
+      mid: formatAtoms(midAtoms, USDC_DECIMALS, 2),
+      source: "1click:/v0/tokens",
+      updatedAt: row.priceUpdatedAt,
+      rheaMid: spec.id === "NEAR-USDC" ? rhea?.human : undefined,
+    });
+  }
+  return out;
+}
+
+export interface QuoteRequest {
+  dry: true;
+  swapType: "EXACT_INPUT" | "EXACT_OUTPUT";
+  slippageTolerance: number;
+  originAsset: string;
+  depositType: "ORIGIN_CHAIN" | "INTENTS";
+  destinationAsset: string;
+  amount: string;
+  recipient: string;
+  recipientType: "DESTINATION_CHAIN" | "INTENTS";
+  refundTo: string;
+  refundType: "ORIGIN_CHAIN" | "INTENTS";
+  deadline: string;
+}
+
+export async function oneclickQuote(request: QuoteRequest): Promise<unknown> {
+  const res = await fetch(`${oneclickBase()}/v0/quote`, {
+    method: "POST",
+    headers: oneclickHeaders(),
+    body: JSON.stringify(request),
+    signal: AbortSignal.timeout(20000),
+  });
+  const text = await res.text();
+  let json: unknown = text;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { message: text };
+  }
+  if (!res.ok) {
+    const message =
+      json && typeof json === "object" && "message" in json
+        ? String((json as { message: unknown }).message)
+        : text.slice(0, 300);
+    throw new Error(`1Click quote ${res.status}: ${message}`);
+  }
+  return json;
+}
+
+export async function depositQuote(input: {
+  usdcAmount: string;
+  intentsAccount: string;
+  refundTo: string;
+}): Promise<unknown> {
+  const atoms = parseAtoms(input.usdcAmount, USDC_DECIMALS);
+  if (atoms == null || atoms <= 0n) throw new Error("Enter a USDC amount like 20");
+  return oneclickQuote({
+    dry: true,
+    swapType: "EXACT_INPUT",
+    slippageTolerance: 100,
+    originAsset: BASE_USDC_ASSET,
+    depositType: "ORIGIN_CHAIN",
+    destinationAsset: USDC_ASSET,
+    amount: atoms.toString(),
+    recipient: input.intentsAccount,
+    recipientType: "INTENTS",
+    refundTo: input.refundTo,
+    refundType: "ORIGIN_CHAIN",
+    deadline: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+  });
+}
+
+export async function fallbackQuote(input: {
+  pair: PairId;
+  side: Side;
+  baseQty: bigint;
+  account: string;
+}): Promise<unknown> {
+  const spec = PAIRS[input.pair];
+  if (input.side === "BUY") {
+    return oneclickQuote({
+      dry: true,
+      swapType: "EXACT_OUTPUT",
+      slippageTolerance: 100,
+      originAsset: USDC_ASSET,
+      depositType: "INTENTS",
+      destinationAsset: spec.baseAsset,
+      amount: input.baseQty.toString(),
+      recipient: input.account,
+      recipientType: "INTENTS",
+      refundTo: input.account,
+      refundType: "INTENTS",
+      deadline: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    });
+  }
+  return oneclickQuote({
+    dry: true,
+    swapType: "EXACT_INPUT",
+    slippageTolerance: 100,
+    originAsset: spec.baseAsset,
+    depositType: "INTENTS",
+    destinationAsset: USDC_ASSET,
+    amount: input.baseQty.toString(),
+    recipient: input.account,
+    recipientType: "INTENTS",
+    refundTo: input.account,
+    refundType: "INTENTS",
+    deadline: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+  });
+}
+
+export async function depositStatus(depositAddress: string): Promise<unknown> {
+  const url = new URL(`${oneclickBase()}/v0/status`);
+  url.searchParams.set("depositAddress", depositAddress);
+  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { statusCode: res.status, message: text.slice(0, 300) };
+  }
+}
