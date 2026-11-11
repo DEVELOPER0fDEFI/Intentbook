@@ -1301,7 +1301,16 @@ export async function priceCompare(input: { pair: string; side: Side; qty: strin
     oneclickError = error instanceof Error ? error.message : "1Click quote failed";
   }
   const amounts = readQuoteAmounts(oneclick);
-  const other = side === "BUY" ? amounts.amountIn : amounts.amountOut;
+  let other = side === "BUY" ? amounts.amountIn : amounts.amountOut;
+  let estimated = false;
+  if (other <= 0n) {
+    const mid = memory().mids[pair]?.midAtoms ?? 0n;
+    const notion = quoteAtomsForBase(qty, mid, spec.baseDecimals);
+    const bps = BigInt(schedule.userPaysBps);
+    other = side === "BUY" ? notion + (notion * bps) / 10_000n : notion - (notion * bps) / 10_000n;
+    if (other < 0n) other = 0n;
+    estimated = other > 0n;
+  }
   const edge = priceEdge({ side, bookQuote: walked.total, otherQuote: other });
   return {
     pair,
@@ -1321,13 +1330,22 @@ export async function priceCompare(input: { pair: string; side: Side; qty: strin
       amountInFormatted: amounts.amountInFormatted,
       amountOutFormatted: amounts.amountOutFormatted,
       error: oneclickError,
+      estimated,
     },
     savings: {
       quote: formatUsd(edge.delta < 0n ? -edge.delta : edge.delta),
       quoteAtoms: edge.delta.toString(),
       bps: edge.bps.toString(),
       bookBetter: edge.bookBetter,
-      label: edge.bookBetter ? "IntentBook book price is better" : other > 0n ? "1Click price is better" : "1Click quote is not available",
+      label: edge.bookBetter
+        ? estimated
+          ? "IntentBook book price is better than the 1Click fee model"
+          : "IntentBook book price is better"
+        : other > 0n
+          ? estimated
+            ? "1Click fee model is better"
+            : "1Click price is better"
+          : "1Click quote is not available",
     },
     fees: schedule,
   };

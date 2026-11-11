@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 interface CompareBody {
   book?: { total?: string; fee?: string; quote?: string };
-  oneclick?: { total?: string | null; error?: string | null };
+  oneclick?: { total?: string | null; error?: string | null; estimated?: boolean };
   savings?: { quote?: string; bps?: string; bookBetter?: boolean; label?: string };
   fees?: { rules?: string; userPaysBps?: number; appFeeBps?: number };
 }
@@ -51,7 +51,9 @@ export function PriceCompare({ pair, side, qty }: { pair: string; side: "BUY" | 
           <div>
             <p className="text-xs uppercase tracking-wide text-muted">1Click</p>
             <p className="nums text-2xl">{body.oneclick?.total ? `${body.oneclick.total} USDC` : "-"}</p>
-            <p className="text-xs text-muted">{body.oneclick?.error || `Model fee ${body.fees?.userPaysBps ?? "-"} bps`}</p>
+            <p className="text-xs text-muted">
+              {body.oneclick?.estimated ? `Estimate from the ${body.fees?.userPaysBps ?? "-"} bps 1Click model` : body.oneclick?.error || `Model fee ${body.fees?.userPaysBps ?? "-"} bps`}
+            </p>
           </div>
           <div>
             <p className="text-xs uppercase tracking-wide text-muted">Savings</p>
