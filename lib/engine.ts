@@ -12,6 +12,7 @@ import { OwnershipError, verifySigner } from "./ownership";
 import { MAKER_FEE_BPS, TAKER_FEE_BPS, takerLeg } from "./fees";
 import {
   formatAtoms,
+  formatFee,
   formatUsd,
   isEvmAddress,
   parseAtoms,
@@ -543,7 +544,7 @@ async function settleUnlocked(input: {
     createdAt: new Date().toISOString(),
     fallback: input.fallback,
     fallbackError: input.fallbackError,
-    takerFee: formatUsd(priced.fee),
+    takerFee: formatFee(priced.fee),
     takerFeeAtoms: priced.fee.toString(),
   };
   const specLot = parseAtoms(lotFor(input.pair), PAIRS[input.pair].baseDecimals) ?? 1n;
@@ -835,7 +836,7 @@ function prepareLeg(input: {
     baseQty: formatAtoms(input.baseQty, input.baseDecimals, 8),
     quoteQty: formatUsd(input.quoteQty),
     price: formatUsd(input.priceAtoms),
-    fee: formatUsd(input.fee ?? 0n),
+    fee: formatFee(input.fee ?? 0n),
     deadline: input.deadline,
     lotIds: input.lotIds,
   };
@@ -906,7 +907,7 @@ async function previewUnlocked(input: {
       baseDecimals: spec.baseDecimals,
     });
     warnings.push("This order crosses the book. You sign the makers' prices, so you keep any price improvement.");
-    warnings.push(`Taker fee is ${TAKER_FEE_BPS.toString()} bps (${formatUsd(priced.fee)} USDC). Maker fee is ${MAKER_FEE_BPS.toString()} bps.`);
+    warnings.push(`Taker fee is ${TAKER_FEE_BPS.toString()} bps (${formatFee(priced.fee)} USDC). Maker fee is ${MAKER_FEE_BPS.toString()} bps.`);
   }
   let rest: PreparedLeg | null = null;
   const seconds = input.deadlineSeconds ?? 24 * 60 * 60;
@@ -1466,7 +1467,7 @@ export async function priceCompare(input: { pair: string; side: Side; qty: strin
       filled: formatAtoms(walked.filled, spec.baseDecimals, 8),
       unfilled: formatAtoms(walked.unfilled, spec.baseDecimals, 8),
       quote: formatUsd(walked.quote),
-      fee: formatUsd(walked.fee),
+      fee: formatFee(walked.fee),
       total: formatUsd(walked.total),
       totalAtoms: walked.total.toString(),
     },

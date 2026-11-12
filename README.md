@@ -1,8 +1,33 @@
 # IntentBook
 
-IntentBook is a public limit order book for BTC, ETH, SOL, and NEAR against USDC. People who want a set price today have to use a custodian, a single-chain DEX, or a private 1Click limit order that nobody else can see. IntentBook shows the depth, matches crossing orders off chain, and settles them as signed NEAR Intents `token_diff` payloads. The batch is checked with `simulate_intents` on mainnet `intents.near`.
+A public limit order book for BTC, ETH, SOL and NEAR against USDC that settles through NEAR Intents. Every order is a `token_diff` the trader signs at their price, so nobody holds the funds and nobody can change the price. Wallets, apps and AI agents share one book.
 
-Track: Unstoppable DeFi (`defi`). License: Apache-2.0.
+Live: https://intentbook.up.railway.app (dry-run: every match is checked with `simulate_intents` on mainnet `intents.near`). Tracks: Unstoppable DeFi (`defi`) and Agent Economy (`agents`). License: Apache-2.0.
+
+## Why it exists
+
+To set a price today, you use a custodian, a single-chain DEX, or a private 1Click limit order that nobody else can see. IntentBook makes the depth public and keeps the settlement non-custodial:
+
+- **Public depth.** Bids, asks and fills are open over REST, SSE, WebSocket and an embeddable widget. An embedding app earns half the taker fee on the fills it sends.
+- **Signed, not deposited.** A resting order is a signed NEAR Intents `token_diff`. Funds stay in the trader's own `intents.near` account until a match settles.
+- **Cross-chain assets in one account.** BTC, ETH and SOL trade as their NEAR Intents tokens against USDC, deposited from many chains. Traders sign with a NEAR wallet, MetaMask or Phantom.
+- **Agents as first-class traders.** An MCP server gives an AI agent its own account and signing key, with a per-order cap the human sets.
+
+## How it compares
+
+| | Where matching happens | Assets | Custody | Notes |
+| --- | --- | --- | --- | --- |
+| **IntentBook** | Off chain, in this open-source server | BTC, ETH, SOL, NEAR vs USDC through NEAR Intents | None: user-signed `token_diff` | Public API, embed with fee share, MCP for agents |
+| DeepBook (Sui) | Fully on chain | Sui assets | Balance manager on chain | The model for a shared book other apps plug into |
+| HEX orderbook (HOT Labs) | `orderbook.fi.tg` contract, settles through NEAR Intents | HOT-ecosystem pairs such as HOT and GNK (per its SDK docs) | Omni balance | The closest prior art on NEAR Intents |
+| Tonic, Spin (NEAR, 2022) | Fully on chain | NEAR-native tokens | Contract balances | Early NEAR order books |
+| 1Click limit orders | Solver network | NEAR Intents assets | None | Private: no public depth |
+
+## Unstoppable, honestly
+
+- **Funds:** never leave the trader's `intents.near` account except in a settled batch the trader signed. If IntentBook disappears, balances are withdrawable from any NEAR Intents app.
+- **Prices:** the operator cannot change a signed price or move funds. `intents.near` checks every signature and balance in the batch, or nothing moves.
+- **Matching:** this is the one central piece. One server orders matches, and the public fill log is the check. The code is open source, so anyone can run a book.
 
 ## Quickstart
 
@@ -20,15 +45,19 @@ npm test
 npm run demo:dry
 ```
 
-The home page has a short explanation, then the book. Use **Demo key** if you are judging. Connect **NEAR wallet** (Meteor, HOT, MyNearWallet, HERE) or **MetaMask** when you want to sign with your own key.
+The home page explains the idea, then opens the trading terminal. The demo key is the default signer, so judges need no wallet. **Connect** switches to a NEAR wallet (Meteor, HOT, MyNearWallet, HERE), MetaMask or Phantom.
 
 ## Try it
 
-1. `npm run dev`, then open the trade page. See four pairs, a reference mid from `GET https://1click.chaindefuser.com/v0/tokens`, and a maker ladder around that mid. NEAR also shows a Rhea quote from `https://smartx.rhea.finance/swapMultiDexPath`.
-2. Leave the size at one maker lot and click **Sign and place** on a buy. The demo key signs locally. A connected wallet signs the same payload. See the order leave the book and a match card whose `simulate_intents` body contains `insufficient balance or overflow` for an unfunded account. A bad signature would say `invalid signature` instead. The taker fee is 8 bps. The maker fee is 0.
-3. Open **Orders**. See the fill, the raw simulation, and a **Rest a 20-second bid** action. **Cancel** asks your key to sign a cancel message, then removes the order here and records the nonce. **Nonce burn** signs an empty intent that reuses the order nonce and simulates it, which is how a nonce is spent on chain. Wait past 20 seconds and see `EXPIRED`.
-4. Open **Funds**. See `mt_batch_balance_of` (zero on a fresh demo key), a dry `POST /v0/quote` from Base USDC into canonical USDC with `recipientType: INTENTS`, and a status lookup that shows `PENDING_DEPOSIT`, `REFUNDED`, `FAILED`, and the other 1Click states. Status polls every 8 seconds after you paste a deposit address. **Create deposit address** asks 1Click for a real address and is not used by the dry path. **Deposit 1 wNEAR** is signed by your NEAR wallet, not by this server. **Sign and simulate withdraw** builds an `ft_withdraw` and stops at simulation unless live mode is armed.
-5. `curl http://127.0.0.1:43123/api/v1/book?pair=BTC-USDC` and `curl http://127.0.0.1:43123/api/v1/trades?pair=BTC-USDC`. See the public book and the simulate body. Signatures are not returned on GET.
+1. `npm run dev` and open the home page. See four markets with a reference mid from `GET https://1click.chaindefuser.com/v0/tokens` and a maker ladder around it. NEAR also shows a Rhea price from `https://smartx.rhea.finance/swapMultiDexPath`.
+2. In the order ticket, pick **Buy** and **Market**, keep one lot, and click **Preview**. See **What you sign**: the exact `token_diff` payload. Click **Sign & buy**. The demo key signs locally, the order takes the best ask, and a receipt appears with a **Signed · unfunded** stamp. Its raw result from `simulate_intents` says `insufficient balance or overflow`, because the signatures passed and only the balance check failed. A bad signature would say `invalid signature`. The taker fee is 8 bps and the maker fee is 0.
+3. Type `sell 0.0001 btc at 200k` in the ticket's sentence box and press **Fill**. The ticket fills in a resting limit order. Tap any price in the book to use it as the limit.
+4. Open **Orders** and click **Rest a 20-second bid**. **Cancel** signs a cancel message and removes the order. **Burn nonce** signs an empty intent with the order's nonce and simulates it, which is how a nonce is spent on chain. Leave a bid alone for 20 seconds and see `EXPIRED`.
+5. Open **Funds**. See balances from `mt_batch_balance_of` (zero for a fresh demo key) and a dry `POST /v0/quote` from Base USDC into Intents USDC. **Track** polls `GET /v0/status` and flags `REFUNDED` and `FAILED`. A NEAR wallet can wrap and deposit NEAR, wNEAR or USDC, credited to any account. **Withdraw** signs an `ft_withdraw` and stops at simulation unless live mode is armed.
+6. Run `curl http://127.0.0.1:43123/api/v1/book?pair=BTC-USDC` and `curl http://127.0.0.1:43123/api/v1/trades?pair=BTC-USDC`. See the public book and the simulation results. Signatures are not returned on GET.
+7. Open **Build** to get the MCP command that lets an AI agent trade with its own key. See [AI agents (MCP)](#ai-agents-mcp).
+
+One real mainnet trade for about $1 is described in [docs/live-test.md](docs/live-test.md).
 
 ## Dry-run and live mode
 

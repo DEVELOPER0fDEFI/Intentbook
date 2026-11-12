@@ -12,6 +12,11 @@ export function formatAtoms(amount: bigint, decimals: number, fracDigits = decim
   return neg ? `-${body}` : body;
 }
 
+/** Fees are often fractions of a cent, so they keep all six USDC decimals. */
+export function formatFee(atoms: bigint): string {
+  return formatAtoms(atoms, USDC_DECIMALS, 6);
+}
+
 export function formatUsd(atoms: bigint): string {
   return formatAtoms(atoms, USDC_DECIMALS, 2);
 }
