@@ -13,7 +13,7 @@ interface SignLeg {
   standard: SignStandard;
 }
 
-export type WalletKind = "demo" | "near" | "evm" | "solana" | "passkey";
+export type WalletKind = "demo" | "near" | "evm" | "solana";
 
 export interface WalletSession {
   kind: WalletKind;
@@ -21,14 +21,22 @@ export interface WalletSession {
   publicKey?: string;
 }
 
+/** The signing standard to request in previews, so the server builds the payload this wallet can sign. */
+export function standardFor(session: WalletSession | null): SignStandard {
+  if (session?.kind === "evm") return "erc191";
+  if (session?.kind === "solana") return "raw_ed25519";
+  return "nep413";
+}
+
 interface WalletApi {
   session: WalletSession | null;
+  /** Send this as `standard` in every preview request. */
+  standard: SignStandard;
   busy: boolean;
   error: string;
   connectNear: () => Promise<void>;
   connectEvm: () => Promise<void>;
   connectSolana: () => Promise<void>;
-  connectPasskey: () => Promise<void>;
   registerNearKey: () => Promise<void>;
   useDemo: () => void;
   signLeg: (leg: SignLeg) => Promise<SignedIntent>;
@@ -62,7 +70,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     const demo = loadDemoKey();
     void (async () => {
       const savedRaw = window.sessionStorage.getItem(STORAGE);
-      const saved = savedRaw ? (JSON.parse(savedRaw) as WalletSession) : null;
+      const parsed = savedRaw ? (JSON.parse(savedRaw) as WalletSession) : null;
+      // Sessions from older builds (such as the removed passkey wallet) fall back to the demo key.
+      const saved = parsed && ["demo", "near", "evm", "solana"].includes(parsed.kind) ? parsed : null;
       const ethereum = (window as unknown as { ethereum?: { request: (args: { method: string }) => Promise<string[]> } }).ethereum;
       if (ethereum && (!saved || saved.kind === "evm")) {
         try {
@@ -188,35 +198,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function connectPasskey() {
-    setBusy(true);
-    setError("");
-    try {
-      if (!window.PublicKeyCredential) throw new Error("This browser has no passkey support");
-      const existing = window.localStorage.getItem("intentbook.passkey");
-      const challenge = crypto.getRandomValues(new Uint8Array(32));
-      if (!existing) {
-        const created = (await navigator.credentials.create({
-          publicKey: {
-            challenge,
-            rp: { name: "IntentBook" },
-            user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "intentbook", displayName: "IntentBook" },
-            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-            authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
-          },
-        })) as PublicKeyCredential | null;
-        if (!created) throw new Error("Passkey was not created");
-        window.localStorage.setItem("intentbook.passkey", btoa(String.fromCharCode(...new Uint8Array(created.rawId))));
-      }
-      const id = window.localStorage.getItem("intentbook.passkey") || "";
-      remember({ kind: "passkey", accountId: id.slice(0, 24), publicKey: id });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not use a passkey");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function registerNearKey() {
     if (!session || session.kind !== "near" || !session.publicKey) {
       setError("Connect a named NEAR account before registering its key");
@@ -271,6 +252,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       };
     }
     if (session.kind === "solana") {
+      if (leg.standard !== "raw_ed25519") throw new Error("Phantom signs raw_ed25519 payloads. Review the order again.");
       const provider = (window as unknown as { solana?: { signMessage: (message: Uint8Array, display: string) => Promise<{ signature: Uint8Array }> } }).solana;
       if (!provider) throw new Error("Reconnect Phantom before signing");
       const signed = await provider.signMessage(new TextEncoder().encode(leg.message), "utf8");
@@ -280,24 +262,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         payload: leg.message,
         public_key: session.publicKey || "",
         signature: `ed25519:${bs58mod.default.encode(signed.signature)}`,
-      };
-    }
-    if (session.kind === "passkey") {
-      const id = window.localStorage.getItem("intentbook.passkey");
-      if (!id) throw new Error("Create a passkey first");
-      const rawId = Uint8Array.from(atob(id), (char) => char.charCodeAt(0));
-      const assertion = (await navigator.credentials.get({
-        publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)), allowCredentials: [{ id: rawId, type: "public-key" }] },
-      })) as PublicKeyCredential | null;
-      if (!assertion) throw new Error("Passkey signing was cancelled");
-      const response = assertion.response as AuthenticatorAssertionResponse;
-      return {
-        standard: "webauthn",
-        payload: leg.message,
-        public_key: `p256:${id}`,
-        signature: `p256:${btoa(String.fromCharCode(...new Uint8Array(response.signature)))}`,
-        client_data_json: new TextDecoder().decode(response.clientDataJSON),
-        authenticator_data: btoa(String.fromCharCode(...new Uint8Array(response.authenticatorData))),
       };
     }
     const ethereum = (window as unknown as { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
@@ -316,7 +280,19 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return outcome?.transaction?.hash || "";
   }
 
-  const value: WalletApi = { session, busy, error, connectNear, connectEvm, connectSolana, connectPasskey, registerNearKey, useDemo, signLeg, nearDeposit };
+  const value: WalletApi = {
+    session,
+    standard: standardFor(session),
+    busy,
+    error,
+    connectNear,
+    connectEvm,
+    connectSolana,
+    registerNearKey,
+    useDemo,
+    signLeg,
+    nearDeposit,
+  };
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }

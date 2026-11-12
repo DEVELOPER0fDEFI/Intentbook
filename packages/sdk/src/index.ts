@@ -51,11 +51,21 @@ export class IntentBookClient {
     return this.post("/api/v1/orders/preview", body);
   }
 
+  /** Returns { message, nonce, standard } for the owner to sign. Pass standard "raw_ed25519" for Solana wallets. */
+  async cancelPreview(id: string, account: string, standard?: string) {
+    return this.post("/api/v1/orders/cancel-preview", { id, account, standard });
+  }
+
   async cancelSigned(signed: unknown) {
     return this.post("/api/v1/orders/cancel", { signed });
   }
 
-  async registerWebhook(body: unknown) {
+  /** Returns { message, nonce, standard } for the account owner to sign before registerWebhook. */
+  async webhookPreview(account: string, url: string, standard?: string) {
+    return this.post("/api/v1/webhooks/preview", { account, url, standard });
+  }
+
+  async registerWebhook(body: { account: string; url: string; signed: unknown }) {
     return this.post("/api/v1/webhooks", body);
   }
 

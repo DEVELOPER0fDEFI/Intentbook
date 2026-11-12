@@ -26,7 +26,7 @@ The home page has a short explanation, then the book. Use **Demo key** if you ar
 
 1. `npm run dev`, then open the trade page. See four pairs, a reference mid from `GET https://1click.chaindefuser.com/v0/tokens`, and a maker ladder around that mid. NEAR also shows a Rhea quote from `https://smartx.rhea.finance/swapMultiDexPath`.
 2. Leave the size at one maker lot and click **Sign and place** on a buy. The demo key signs locally. A connected wallet signs the same payload. See the order leave the book and a match card whose `simulate_intents` body contains `insufficient balance or overflow` for an unfunded account. A bad signature would say `invalid signature` instead. The taker fee is 8 bps. The maker fee is 0.
-3. Open **Orders**. See the fill, the raw simulation, and a **Rest a 20-second bid** action. **Cancel** removes the order here and records the nonce. **Nonce burn** shows why the chain does not have a separate invalidate call. Wait past 20 seconds and see `EXPIRED`.
+3. Open **Orders**. See the fill, the raw simulation, and a **Rest a 20-second bid** action. **Cancel** asks your key to sign a cancel message, then removes the order here and records the nonce. **Nonce burn** signs an empty intent that reuses the order nonce and simulates it, which is how a nonce is spent on chain. Wait past 20 seconds and see `EXPIRED`.
 4. Open **Funds**. See `mt_batch_balance_of` (zero on a fresh demo key), a dry `POST /v0/quote` from Base USDC into canonical USDC with `recipientType: INTENTS`, and a status lookup that shows `PENDING_DEPOSIT`, `REFUNDED`, `FAILED`, and the other 1Click states. Status polls every 8 seconds after you paste a deposit address. **Create deposit address** asks 1Click for a real address and is not used by the dry path. **Deposit 1 wNEAR** is signed by your NEAR wallet, not by this server. **Sign and simulate withdraw** builds an `ft_withdraw` and stops at simulation unless live mode is armed.
 5. `curl http://127.0.0.1:43123/api/v1/book?pair=BTC-USDC` and `curl http://127.0.0.1:43123/api/v1/trades?pair=BTC-USDC`. See the public book and the simulate body. Signatures are not returned on GET.
 
@@ -39,7 +39,7 @@ The home page has a short explanation, then the book. Use **Demo key** if you ar
 | `simulate_intents` | Yes, view call | No |
 | `GET /v0/tokens`, `POST /v0/quote` with `dry: true`, `GET /v0/status` | Yes | No |
 | Rhea `swapMultiDexPath` | Yes, quote only | No |
-| `execute_intents` | Only if `INTENTBOOK_LIVE=1`, simulation succeeded, size is within 5 lots and 50 USDC, and the relayer key is set | Yes, from the relayer account |
+| `execute_intents` | Only if `INTENTBOOK_LIVE=1`, simulation succeeded, size is within 5 lots and 50 USDC, the relayer key is set, and (for matches) the operator and market-maker keys come from the environment | Yes, from the relayer account |
 
 An empty intent from the operator key simulates successfully and returns an intent hash, the current salt, and the fee. A matched `token_diff` batch from unfunded keys stops on `insufficient balance or overflow` after the signature check. Closure math (the 1 pip protocol fee on negative deltas, matching `TokenDiff::closure` in near/intents) is checked in `npm test`. The product taker fee is a separate operator `token_diff` of 8 bps. A funded simulation would be required before live mode broadcasts.
 
@@ -85,10 +85,10 @@ The referrer id is stored with each fill and earns `REFERRER_SHARE_BPS` of the t
 ## Wallets
 
 - **Demo key**: an ed25519 key in `localStorage`. This is the fallback for judges. It is not funded.
-- **NEAR wallet selector**: Meteor, HOT, MyNearWallet, and HERE. The selector restores a previous session after refresh. Named accounts sign NEP-413. **Register key** checks `has_public_key` and asks the wallet to call `add_public_key`. The server does not send that transaction.
+- **NEAR wallet selector**: Meteor, HOT, MyNearWallet, and HERE. The selector restores a previous session after refresh. Named accounts sign NEP-413. The server accepts a named account's signature only when the key is a full-access key of that account on NEAR (`view_access_key`) or is registered on intents.near (`has_public_key`). **Register key** checks `has_public_key` and asks the wallet to call `add_public_key`. The server does not send that transaction.
 - **MetaMask**: ERC-191 `personal_sign`. A previous connection is restored with `eth_accounts` and no popup.
-- **Phantom**: raw ed25519 over the intent payload. `signer_id` is the hex public key.
-- **Passkey**: sign in without a wallet. The browser creates a WebAuthn credential and later assertions are wrapped as `webauthn` payloads.
+- **Phantom**: `raw_ed25519` over the JSON payload (`signer_id`, `verifying_contract`, `deadline`, `nonce`, `intents`). `signer_id` is the hex public key. The client asks for this with `standard: "raw_ed25519"` on preview.
+- `webauthn` payloads are refused. There is no passkey wallet until P-256 verification over the intent hash is built.
 - Nonces default to the versioned form: magic `5628f6c6`, version 1, the 4-byte salt, the deadline in nanoseconds, then 15 random bytes. If `simulate_intents` rejects that nonce, the next order uses the legacy salt prefix.
 
 ## Deposits and withdrawals
@@ -101,7 +101,7 @@ Explorer links point at NearBlocks for the account and, after a broadcast, the t
 
 ## Cancel
 
-Soft cancel removes the order from the book and records the nonce in SQLite so this process will not accept it again. The Verifier burns a nonce only when `execute_intents` commits it. There is no separate invalidate method. **Nonce burn** prepares an empty intent that reuses the order nonce. That intent is simulated, and it is broadcast only when live mode passes the same checks. Dry-run does not broadcast it.
+Cancel is signed. `POST /api/v1/orders/cancel-preview` returns a cancel message for that order. The owner signs it with the same standard as their orders and sends `POST /api/v1/orders/cancel` with `{ signed }`. The message expires in 5 minutes, names one order, and uses a `cancel` intent that intents.near does not know, so it cannot be replayed there. Unsigned cancels are refused. A cancel removes the order from the book and records the nonce in SQLite so this process will not accept it again. The Verifier burns a nonce only when `execute_intents` commits it. There is no separate invalidate method. **Nonce burn** prepares an empty intent that reuses the order nonce. That intent is simulated, and it is broadcast only when live mode passes the same checks. Dry-run does not broadcast it.
 
 ## API
 
@@ -116,7 +116,7 @@ See the API page in the app. Read routes:
 - `GET /api/v1/status?depositAddress=`
 - `GET /api/v1/stream` (server-sent events)
 
-Writes: `POST /api/v1/orders/preview`, `POST /api/v1/orders`, `POST /api/v1/orders/cancel`, `POST /api/v1/orders/burn-preview`, `POST /api/v1/orders/burn`, `POST /api/v1/deposit-quote`, `POST /api/v1/near-deposit`, `POST /api/v1/withdraw/preview`, `POST /api/v1/withdraw`, `POST /api/v1/quote`.
+Writes: `POST /api/v1/orders/preview`, `POST /api/v1/orders`, `POST /api/v1/orders/cancel-preview`, `POST /api/v1/orders/cancel`, `POST /api/v1/orders/burn-preview`, `POST /api/v1/orders/burn`, `POST /api/v1/deposit-quote`, `POST /api/v1/near-deposit`, `POST /api/v1/withdraw/preview`, `POST /api/v1/withdraw`, `POST /api/v1/webhooks/preview`, `POST /api/v1/webhooks`, `POST /api/v1/quote`. Every write that acts for an account needs that account's signature.
 
 Pairs: `BTC-USDC`, `ETH-USDC`, `SOL-USDC`, `NEAR-USDC`. Asset ids are loaded from `/v0/tokens` for prices. The ids used in intents are the canonical ones checked on 11 Nov 2026: `nep141:btc.omft.near`, `nep141:eth.omft.near`, `nep141:sol.omft.near`, `nep141:wrap.near`, and NEAR USDC `nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1`.
 
@@ -134,6 +134,9 @@ Pairs: `BTC-USDC`, `ETH-USDC`, `SOL-USDC`, `NEAR-USDC`. Asset ids are loaded fro
 | `REFERRER_SHARE_BPS` | No | Share of the taker fee credited to an embed referrer. Default 5000 (50%). |
 | `PORT` | No | HTTP and WebSocket port. Railway sets this. Fallback 43123. |
 | `INTENTBOOK_NONCE` | No | Set to `legacy` to force the old 4-byte salt nonce. Default is the versioned `5628f6c6` nonce. |
+| `INTENTBOOK_OPERATOR_SECRET` | Live matches | ed25519 secret (64 hex characters or `ed25519:<base58>`) for the operator that signs the taker fee and the protocol closure. Its implicit account receives the fees. Without it a throwaway key is made at each boot and live matches are refused. |
+| `INTENTBOOK_MM_SECRET` | Live matches | ed25519 secret for the market-maker ladder. It can be the same key as the operator. |
+| `INTENTBOOK_LOT_<BASE>` | No | Maker lot override, for example `INTENTBOOK_LOT_NEAR=0.1` for a small live test. Defaults: BTC 0.0001, ETH 0.002, SOL 0.1, NEAR 2. |
 | `NEAR_RPC_URL` | No | Defaults to `https://rpc.mainnet.near.org`, then `https://rpc.fastnear.com`. |
 | `INTENTS_CONTRACT` | No | Defaults to `intents.near`. |
 | `ONECLICK_BASE` | No | Defaults to `https://1click.chaindefuser.com`. |
@@ -168,6 +171,9 @@ The directory is created if it is missing. Do not commit secrets.
 | `REFERRER_SHARE_BPS` | Optional. Default 5000. |
 | `MM_INTERVAL_MS` | Optional. Default 45000. |
 | `INTENTBOOK_NONCE` | Optional. `legacy` forces the old nonce. |
+| `INTENTBOOK_OPERATOR_SECRET` | Only if live mode is armed. Never commit it. |
+| `INTENTBOOK_MM_SECRET` | Only if live mode is armed. May equal the operator secret. |
+| `INTENTBOOK_LOT_NEAR` | Optional. `0.1` for a small live test. |
 
 `vercel.json` remains for a Vercel build. Serverless disks there are ephemeral, so a durable book belongs on Railway with the volume above. Do not set `INTENTBOOK_LIVE=1` on a public deploy until the relayer account is funded and the size caps are acceptable.
 
@@ -175,11 +181,13 @@ The directory is created if it is missing. Do not commit secrets.
 
 - The matcher is run by this process. It can order matches. The public fill log is the check. A separate chain of custody is not provided.
 - User orders are one signature for the take and, if size is left, a second signature to rest. Maker lots are filled whole.
-- Soft cancel removes the order here. On-chain nonce burn requires `execute_intents` and is not broadcast in dry-run.
+- Cancel removes the order here. On-chain nonce burn requires `execute_intents` and is not broadcast in dry-run.
+- A preview does not hold maker lots. Two takers can preview the same lot; the first valid signature fills it and the second gets 409 and reviews again.
 - Salt is the live 4-byte prefix. Legacy nonces of that shape were accepted by `simulate_intents` on 11 Nov 2026. If the contract later requires the versioned nonce (`5628f6c6` magic), resting quotes must be re-signed.
 - 1Click `generate-intent`, `submit-intent`, and `POST /v0/orders` are not called. Those need a partner JWT. Private 1Click limit orders are a different product: this book is public.
 - A named NEAR account cannot pass live `execute_intents` until its public key is registered with `add_public_key`.
-- Live settlement refuses unfunded simulations, missing relayer keys, and orders above 5 lots or 50 USDC.
+- Live settlement refuses unfunded simulations, missing relayer keys, throwaway operator or market-maker keys, and orders above 5 lots or 50 USDC. Live withdraws are capped at 50 USDC of value and limited to USDC and the book's base assets.
+- Webhook URLs must be https on a public host in production. Hostnames are not resolved, so a public name that points at a private address is not caught.
 - No hosted custody. Wallet deposits and withdrawals are signed by the user.
 
 ## Disclosure

@@ -56,6 +56,19 @@ export const PAIRS: Record<PairId, PairSpec> = {
   },
 };
 
+/**
+ * Maker lot size for a pair. INTENTBOOK_LOT_<BASE> (for example INTENTBOOK_LOT_NEAR=0.1)
+ * overrides the default, so a small live test can use lots worth cents. Server only.
+ */
+export function lotFor(pair: PairId, env: NodeJS.ProcessEnv = process.env): string {
+  const spec = PAIRS[pair];
+  const raw = env[`INTENTBOOK_LOT_${spec.base}`]?.trim();
+  if (!raw) return spec.lot;
+  const match = /^\d+(?:\.(\d+))?$/.exec(raw);
+  if (!match || Number(raw) <= 0 || (match[1]?.length ?? 0) > spec.baseDecimals) return spec.lot;
+  return raw;
+}
+
 export function isPairId(value: string): value is PairId {
   return (PAIR_IDS as readonly string[]).includes(value);
 }

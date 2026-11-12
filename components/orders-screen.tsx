@@ -64,17 +64,50 @@ export function OrdersScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account]);
 
-  async function cancel(id: string) {
-    setError("");
-    const res = await fetch("/api/v1/orders/cancel", {
+  async function post(path: string, body: unknown) {
+    const res = await fetch(path, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id, account }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!res.ok) setError(data.error || "Cancel failed");
-    else setCancelNote(String(data.onChain || ""));
-    await load();
+    if (!res.ok) throw new Error(data.error || "Request failed");
+    return data;
+  }
+
+  async function cancel(id: string) {
+    setError("");
+    setBusy(true);
+    try {
+      const draft = await post("/api/v1/orders/cancel-preview", { id, account, standard: wallet.standard });
+      const signed = await wallet.signLeg(draft);
+      const data = await post("/api/v1/orders/cancel", { signed });
+      setCancelNote(String(data.onChain || ""));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cancel failed");
+    } finally {
+      setBusy(false);
+      await load();
+    }
+  }
+
+  async function burn(id: string) {
+    setError("");
+    setBusy(true);
+    try {
+      const draft = await post("/api/v1/orders/burn-preview", { id, account, standard: wallet.standard });
+      const signed = await wallet.signLeg(draft);
+      const data = await post("/api/v1/orders/burn", { id, account, signed });
+      setCancelNote(
+        data.broadcast
+          ? `Nonce burned on intents.near: ${data.explorer}`
+          : `Nonce burn signed and simulated (${data.verdict}). ${data.note || ""}`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Nonce burn failed");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function placeExpiring() {
@@ -93,6 +126,7 @@ export function OrdersScreen() {
           qty: "0.0001",
           price: "1",
           deadlineSeconds: 20,
+          standard: wallet.standard,
         }),
       });
       const preview = await previewRes.json();
@@ -119,7 +153,9 @@ export function OrdersScreen() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-4xl">Your orders</h1>
-          <p className="mt-1 text-sm text-muted">Demo key {account ? shortAccount(account) : ""}. Cancel is off-book only. The nonce stays unused.</p>
+          <p className="mt-1 text-sm text-muted">
+            {account ? shortAccount(account) : "No wallet"}. Cancel is signed and removes the order here. Nonce burn also spends the nonce on intents.near when live.
+          </p>
         </div>
         <Button type="button" variant="outline" disabled={busy} onClick={placeExpiring}>
           {busy ? "Signing" : "Rest a 20-second bid"}
@@ -149,27 +185,11 @@ export function OrdersScreen() {
               <div className="flex items-center gap-2">
                 <Badge value={order.status} />
                 {order.status === "OPEN" ? (
-                  <Button size="sm" variant="outline" onClick={() => cancel(order.id)}>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => cancel(order.id)}>
                     Cancel
                   </Button>
                 ) : null}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={async () => {
-                    const res = await fetch("/api/v1/orders/burn-preview", {
-                      method: "POST",
-                      headers: { "content-type": "application/json" },
-                      body: JSON.stringify({ id: order.id, account }),
-                    });
-                    const data = await res.json();
-                    if (!res.ok) {
-                      setError(data.error || "Could not prepare the nonce burn");
-                      return;
-                    }
-                    setCancelNote(String(data.note || ""));
-                  }}
-                >
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => burn(order.id)}>
                   Nonce burn
                 </Button>
               </div>

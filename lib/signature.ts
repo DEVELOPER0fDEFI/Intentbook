@@ -35,7 +35,8 @@ export function verifyUserSignature(signed: SignedIntent, expectedAccount: strin
       return ok && bytesToHex(publicKey) === signer.toLowerCase();
     }
     if (signed.standard === "webauthn") {
-      return Boolean(signed.client_data_json && signed.authenticator_data && signed.signature && signed.public_key);
+      // Not verified here, so never accepted. A passkey path needs P-256 verification over the intent hash.
+      return false;
     }
     if (!verifyNep413Crypto(signed)) return false;
     if (accountKind(signer) === "implicit") return signer === implicitAccountOf(signed as SignedNep413);

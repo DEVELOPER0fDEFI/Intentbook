@@ -3,10 +3,12 @@ import path from "node:path";
 import { accountKind, sameAccount } from "./accounts";
 import { activeFeeSchedule } from "./app-fees";
 import { priceEdge, readQuoteAmounts, walkBook } from "./compare";
-import { PAIRS, USDC_ASSET, USDC_CONTRACT } from "./assets";
+import { lotFor, PAIRS, USDC_ASSET, USDC_CONTRACT } from "./assets";
 import { ONCHAIN_CANCEL_NOTE, nearDepositCall, withdrawIntent } from "./chain";
 import { closureForDeltas } from "./closure";
-import { erc191FromNep413Message } from "./erc191";
+import { erc191FromNep413Message as jsonPayloadFromNep413 } from "./erc191";
+import { keyFromEnv, type KeySource } from "./keys";
+import { OwnershipError, verifySigner } from "./ownership";
 import { MAKER_FEE_BPS, TAKER_FEE_BPS, takerLeg } from "./fees";
 import {
   formatAtoms,
@@ -36,10 +38,10 @@ import {
 import { depositQuote, depositStatus, fallbackQuote, referencePrices, rheaSwapQuote, withdrawQuote, type ReferencePrice } from "./quotes";
 import { broadcastExecute } from "./relayer";
 import { routePlan } from "./route";
-import { intentMessage, intentNonce, intentSigner, saltOf, verifyUserSignature } from "./signature";
+import { intentMessage, intentNonce, saltOf } from "./signature";
 import { buildCandles, CANDLE_INTERVALS, groupDepth, pickWinner, type CandleInterval } from "./market";
 import { bookStore, hasNonce, rememberNonce } from "./store";
-import { newWebhookSecret } from "./webhooks";
+import { newWebhookSecret, webhookUrlProblem } from "./webhooks";
 import type { Fill, PairId, PreparedLeg, Preview, Side, SignedIntent, SignStandard, StoredOrder } from "./types";
 import { PAIR_IDS } from "./types";
 import {
@@ -62,12 +64,13 @@ export class EngineError extends Error {
 interface Memory {
   orders: StoredOrder[];
   fills: Fill[];
-  previews: Map<string, Preview & { reservedIds: string[] }>;
+  previews: Map<string, Preview & { lotIds: string[] }>;
   history: Record<PairId, { t: number; mid: number }[]>;
   mids: Partial<Record<PairId, ReferencePrice>>;
   listeners: Set<(event: { type: string; ts: number; pair?: string; trade?: unknown }) => void>;
   mm?: DemoKey;
   operator?: DemoKey;
+  keySource?: { mm: KeySource; operator: KeySource };
   feePips?: number;
   salt?: string;
   feeCollector?: string;
@@ -129,6 +132,45 @@ function requireBookAccount(account: string): string {
     throw new EngineError(400, "Account must be a NEAR account, an implicit id, or an EVM address");
   }
   return accountKind(id) === "evm" ? id : id.toLowerCase();
+}
+
+/** Signature check plus, for named NEAR accounts, proof that the key belongs to the account. */
+async function requireSigner(signed: SignedIntent | null | undefined, account: string): Promise<void> {
+  if (!signed || typeof signed !== "object") throw new EngineError(400, "Signed payload is missing");
+  try {
+    await verifySigner(signed, account);
+  } catch (error) {
+    if (error instanceof OwnershipError) throw new EngineError(error.status, error.message);
+    throw error;
+  }
+}
+
+function parseSignedMessage(signed: SignedIntent): {
+  signer_id?: string;
+  deadline?: string;
+  nonce?: string;
+  intents?: { intent?: string; order_id?: string; token?: string; amount?: string; receiver_id?: string }[];
+} {
+  try {
+    return JSON.parse(intentMessage(signed));
+  } catch {
+    throw new EngineError(400, "Signed message is not JSON");
+  }
+}
+
+/** The nonce a signed intent commits to: NEP-413 carries it beside the message, the others inside it. */
+function signedNonce(signed: SignedIntent): string | undefined {
+  if (signed.standard === "nep413") return signed.payload?.nonce;
+  return parseSignedMessage(signed).nonce;
+}
+
+const MAX_SIGNED_DEADLINE_MS = 15 * 60 * 1000;
+const MAX_OPEN_PREVIEWS = 5000;
+
+function requireFreshDeadline(deadline: string | undefined, label: string) {
+  const at = Date.parse(deadline ?? "");
+  if (!Number.isFinite(at) || at <= Date.now()) throw new EngineError(400, `${label} signature has expired. Sign again.`);
+  if (at > Date.now() + MAX_SIGNED_DEADLINE_MS) throw new EngineError(400, `${label} deadline is too far out`);
 }
 
 function emit(type: string, extra: { pair?: string; trade?: unknown } = {}) {
@@ -342,7 +384,7 @@ async function seedUnlocked() {
   const state = memory();
   for (const price of prices) {
     const spec = PAIRS[price.pair];
-    const lot = parseAtoms(spec.lot, spec.baseDecimals);
+    const lot = parseAtoms(lotFor(price.pair), spec.baseDecimals);
     if (!lot) continue;
     const previous = state.mids[price.pair]?.midAtoms;
     const drifted =
@@ -391,16 +433,6 @@ async function backstopUnlocked() {
       if (fill.settlement === "rejected") backstopFailed.add(order.id);
     } catch {
       backstopFailed.add(order.id);
-    }
-  }
-}
-
-function release(ids: string[]) {
-  const nowIso = new Date().toISOString();
-  for (const order of memory().orders) {
-    if (ids.includes(order.id) && order.reservedUntil && order.reservedUntil > nowIso) {
-      order.reservedBy = undefined;
-      order.reservedUntil = undefined;
     }
   }
 }
@@ -514,7 +546,7 @@ async function settleUnlocked(input: {
     takerFee: formatUsd(priced.fee),
     takerFeeAtoms: priced.fee.toString(),
   };
-  const specLot = parseAtoms(PAIRS[input.pair].lot, PAIRS[input.pair].baseDecimals) ?? 1n;
+  const specLot = parseAtoms(lotFor(input.pair), PAIRS[input.pair].baseDecimals) ?? 1n;
   const decision = executionDecision({
     live: liveRequested(),
     verdict: verdict.kind,
@@ -522,6 +554,7 @@ async function settleUnlocked(input: {
     lot: specLot,
     quoteQty,
     relayerConfigured: relayerConfigured(),
+    persistentKeys: persistentKeys(),
   });
   if (liveRequested() && !decision.broadcast) {
     if (nonceRejected(verdict.message)) enableLegacyNonces();
@@ -608,8 +641,11 @@ export function boot(): Promise<void> {
 async function bootInner() {
   const state = memory();
   if (state.started) return;
-  state.mm = generateKey();
-  state.operator = generateKey();
+  const operatorKey = keyFromEnv("INTENTBOOK_OPERATOR_SECRET");
+  const mmKey = keyFromEnv("INTENTBOOK_MM_SECRET");
+  state.operator = operatorKey ?? generateKey();
+  state.mm = mmKey ?? generateKey();
+  state.keySource = { operator: operatorKey ? "env" : "ephemeral", mm: mmKey ? "env" : "ephemeral" };
   load();
   sweepUnlocked();
   try {
@@ -645,6 +681,16 @@ async function bootInner() {
   }, 5000).unref?.();
 }
 
+function persistentKeys(): boolean {
+  const source = memory().keySource;
+  return source?.operator === "env" && source?.mm === "env";
+}
+
+function liveExecutionState(): "off" | "armed" | "refused" {
+  if (!liveRequested()) return "off";
+  return relayerConfigured() && persistentKeys() ? "armed" : "refused";
+}
+
 export async function health() {
   await boot();
   const state = memory();
@@ -652,10 +698,11 @@ export async function health() {
   return {
     ok: state.feePips != null,
     service: "intentbook",
-    dryRun: true,
-    liveExecution: liveRequested() ? (relayerConfigured() ? "armed" : "refused") : "off",
+    dryRun: !liveRequested(),
+    keySource: state.keySource ?? null,
+    liveExecution: liveExecutionState(),
     liveNote: liveRequested()
-      ? "INTENTBOOK_LIVE=1. execute_intents runs only after simulate_intents succeeds, the order is within 5 lots and 50 USDC, and NEAR_RELAYER_ACCOUNT plus NEAR_RELAYER_PRIVATE_KEY are set."
+      ? "INTENTBOOK_LIVE=1. execute_intents runs only after simulate_intents succeeds, the order is within 5 lots and 50 USDC, NEAR_RELAYER_ACCOUNT plus NEAR_RELAYER_PRIVATE_KEY are set, and matches also need INTENTBOOK_OPERATOR_SECRET and INTENTBOOK_MM_SECRET."
       : "Dry-run is the default. execute_intents is not called.",
     takerFeeBps: Number(TAKER_FEE_BPS),
     makerFeeBps: Number(MAKER_FEE_BPS),
@@ -712,6 +759,7 @@ export async function book(pairRaw: string) {
     bestBid: bids[0]?.price ?? null,
     bestAsk: asks[0]?.price ?? null,
     spread: bestBid != null && bestAsk != null ? formatUsd(bestAsk - bestBid) : null,
+    lot: lotFor(pair),
     bids,
     asks,
     ts: new Date().toISOString(),
@@ -729,7 +777,7 @@ export async function orders(filter: { account?: string; pair?: string; status?:
   await boot();
   const pair = filter.pair ? requirePair(filter.pair) : null;
   const rows = memory().orders.filter((order) => {
-    if (filter.account && order.owner !== filter.account.toLowerCase()) return false;
+    if (filter.account && !sameAccount(order.owner, filter.account)) return false;
     if (pair && order.pair !== pair) return false;
     if (filter.status && order.status !== filter.status) return false;
     return true;
@@ -737,11 +785,27 @@ export async function orders(filter: { account?: string; pair?: string; status?:
   return { orders: rows.slice(-200).reverse().map(publicOrder) };
 }
 
-function signingStandard(account: string): SignStandard {
-  return accountKind(account) === "evm" ? "erc191" : "nep413";
+/**
+ * EVM accounts sign ERC-191. Implicit accounts sign NEP-413 (demo key, NEAR wallets) or,
+ * when the client asks, raw ed25519 over the JSON payload (Phantom and other Solana wallets).
+ */
+function signingStandard(account: string, requested?: string): SignStandard {
+  const kind = accountKind(account);
+  if (kind === "evm") return "erc191";
+  if (requested === "raw_ed25519") {
+    if (kind !== "implicit") throw new EngineError(400, "raw_ed25519 signing needs a 64-character implicit account id");
+    return "raw_ed25519";
+  }
+  return "nep413";
+}
+
+/** NEP-413 signs the bare message with the nonce beside it. The other standards sign one JSON payload that carries the nonce. */
+function messageFor(standard: SignStandard, nep413: string, nonce: string): string {
+  return standard === "nep413" ? nep413 : jsonPayloadFromNep413(nep413, nonce);
 }
 
 function prepareLeg(input: {
+  standard: SignStandard;
   account: string;
   deadline: string;
   diff: Record<string, string>;
@@ -762,9 +826,9 @@ function prepareLeg(input: {
     diff: input.diff,
     memo: input.memo,
   });
-  const standard = signingStandard(input.account);
+  const standard = input.standard;
   return {
-    message: standard === "erc191" ? erc191FromNep413Message(nep413, nonce) : nep413,
+    message: messageFor(standard, nep413, nonce),
     nonce,
     recipient: "intents.near",
     standard,
@@ -785,6 +849,7 @@ export async function preview(input: {
   qty: string;
   price?: string;
   deadlineSeconds?: number;
+  standard?: string;
   referrer?: string;
 }) {
   return lock(() => previewUnlocked(input));
@@ -798,6 +863,7 @@ async function previewUnlocked(input: {
   qty: string;
   price?: string;
   deadlineSeconds?: number;
+  standard?: string;
   referrer?: string;
 }): Promise<Preview> {
   await boot();
@@ -812,6 +878,7 @@ async function previewUnlocked(input: {
   if (input.orderType === "LIMIT" && (limit == null || limit <= 0n)) {
     throw new EngineError(400, "Enter a limit price in USDC per 1 coin");
   }
+  const standard = signingStandard(account, input.standard);
   const now = Date.now();
   const selected = selectLots(orderLots(pair, now), { side: input.side, limit, qty, now });
   const makerOrders = selected.taken
@@ -825,6 +892,7 @@ async function previewUnlocked(input: {
     const base = BigInt(priced.taker[spec.baseAsset] ?? "0");
     const baseQty = base < 0n ? -base : base;
     take = prepareLeg({
+      standard,
       account,
       deadline: iso(now + 90_000),
       diff: priced.taker,
@@ -851,6 +919,7 @@ async function previewUnlocked(input: {
         ? { [spec.baseAsset]: selected.leftover.toString(), [USDC_ASSET]: (-quote).toString() }
         : { [spec.baseAsset]: (-selected.leftover).toString(), [USDC_ASSET]: quote.toString() };
     rest = prepareLeg({
+      standard,
       account,
       deadline: iso(now + seconds * 1000),
       diff,
@@ -896,12 +965,15 @@ async function previewUnlocked(input: {
   }
   const previewId = crypto.randomUUID();
   const expiresAt = iso(now + 60_000);
-  const hold = iso(now + 60_000);
-  for (const order of makerOrders) {
-    order.reservedBy = previewId;
-    order.reservedUntil = hold;
+  // A preview does not hold maker lots: it is unsigned, so holding would let anyone empty the book.
+  // Commit re-checks that every lot is still open, and the first valid signature wins.
+  const previews = memory().previews;
+  while (previews.size >= MAX_OPEN_PREVIEWS) {
+    const oldest = previews.keys().next().value;
+    if (oldest === undefined) break;
+    previews.delete(oldest);
   }
-  const body: Preview & { reservedIds: string[] } = {
+  const body: Preview & { lotIds: string[] } = {
     previewId,
     account,
     pair,
@@ -914,9 +986,9 @@ async function previewUnlocked(input: {
     fallbackError,
     warnings,
     referrer: input.referrer || undefined,
-    reservedIds: makerOrders.map((order) => order.id),
+    lotIds: makerOrders.map((order) => order.id),
   };
-  memory().previews.set(previewId, body);
+  previews.set(previewId, body);
   return {
     previewId,
     account,
@@ -933,16 +1005,13 @@ async function previewUnlocked(input: {
   };
 }
 
-function assertLeg(signed: SignedIntent, leg: PreparedLeg, salt: string, account: string) {
+async function assertLeg(signed: SignedIntent, leg: PreparedLeg, salt: string, account: string): Promise<string> {
+  if (!signed || typeof signed !== "object" || signed.standard !== leg.standard) {
+    throw new EngineError(400, `This leg must be signed as ${leg.standard}`);
+  }
   if (intentMessage(signed) !== leg.message) throw new EngineError(400, "Signed payload does not match the preview");
-  if (signed.standard === "nep413" && signed.payload.nonce !== leg.nonce) {
-    throw new EngineError(400, "Signed payload does not match the preview");
-  }
-  if (signed.standard !== "nep413") {
-    const parsed = JSON.parse(signed.payload) as { nonce?: string };
-    if (parsed.nonce !== leg.nonce) throw new EngineError(400, "Signed payload does not match the preview");
-  }
-  if (!verifyUserSignature(signed, account)) throw new EngineError(400, "Signature did not verify");
+  if (signedNonce(signed) !== leg.nonce) throw new EngineError(400, "Signed payload does not match the preview");
+  await requireSigner(signed, account);
   if (saltOf(signed) !== salt) throw new EngineError(400, "Nonce salt is stale. Review the order again.");
   if (hasNonce(account, leg.nonce)) throw new EngineError(409, "That nonce was already cancelled or used here");
   return account;
@@ -957,7 +1026,6 @@ async function commitUnlocked(input: { previewId: string; take?: SignedIntent | 
   const preview = memory().previews.get(input.previewId);
   if (!preview) throw new EngineError(404, "Preview expired. Review the order again.");
   if (Date.parse(preview.expiresAt) <= Date.now()) {
-    release(preview.reservedIds);
     memory().previews.delete(preview.previewId);
     throw new EngineError(409, "Preview expired. Review the order again.");
   }
@@ -967,15 +1035,18 @@ async function commitUnlocked(input: { previewId: string; take?: SignedIntent | 
   try {
     if (preview.take) {
       if (!input.take) throw new EngineError(400, "The crossing order still needs a signature");
-      const signer = assertLeg(input.take, preview.take, protocol.salt, preview.account);
+      const signer = await assertLeg(input.take, preview.take, protocol.salt, preview.account);
       if (signer !== preview.account) throw new EngineError(400, "Signer does not match the preview account");
       const used = await nonceUsed(signer, intentNonce(input.take));
       if (used) throw new EngineError(409, "That nonce is already used on intents.near");
-      const makers = preview.reservedIds
-        .map((id) => memory().orders.find((order) => order.id === id && order.status === "OPEN"))
+      const now = Date.now();
+      const makers = preview.lotIds
+        .map((id) =>
+          memory().orders.find((order) => order.id === id && order.status === "OPEN" && Date.parse(order.deadline) > now),
+        )
         .filter((order): order is StoredOrder => Boolean(order));
-      if (makers.length !== preview.reservedIds.length) {
-        throw new EngineError(409, "A reserved lot left the book. Review the order again.");
+      if (makers.length !== preview.lotIds.length) {
+        throw new EngineError(409, "A maker lot was filled, re-quoted or expired. Review the order again.");
       }
       fill = await settleUnlocked({
         pair: preview.pair,
@@ -986,7 +1057,6 @@ async function commitUnlocked(input: { previewId: string; take?: SignedIntent | 
         fallbackError: preview.fallbackError,
       });
       if (fill.settlement === "rejected") {
-        release(preview.reservedIds);
         memory().previews.delete(preview.previewId);
         emit("book");
         return { ok: false, error: fill.note, fill: publicFill(fill) };
@@ -994,7 +1064,7 @@ async function commitUnlocked(input: { previewId: string; take?: SignedIntent | 
     }
     if (preview.rest) {
       if (!input.rest) throw new EngineError(400, "The resting order still needs a signature");
-      const signer = assertLeg(input.rest, preview.rest, protocol.salt, preview.account);
+      const signer = await assertLeg(input.rest, preview.rest, protocol.salt, preview.account);
       if (signer !== preview.account) throw new EngineError(400, "Signer does not match the preview account");
       const spec = PAIRS[preview.pair];
       const signedDiff = readDiffs(intentMessage(input.rest))[0]?.diff ?? {};
@@ -1026,7 +1096,8 @@ async function commitUnlocked(input: { previewId: string; take?: SignedIntent | 
       created.push(publicOrder(order));
     }
   } catch (error) {
-    release(preview.reservedIds);
+    // The take may already be settled when the rest leg fails. Its nonce is spent either way.
+    if (preview.take && fill && fill.settlement !== "rejected") rememberNonce(preview.account, preview.take.nonce);
     memory().previews.delete(preview.previewId);
     throw error;
   }
@@ -1065,10 +1136,11 @@ async function commitUnlocked(input: { previewId: string; take?: SignedIntent | 
     lot: 1n,
     quoteQty: 1n,
     relayerConfigured: relayerConfigured(),
+    persistentKeys: persistentKeys(),
   });
   return {
     ok: true,
-    liveExecution: liveRequested() ? (relayerConfigured() ? "armed" : "refused") : "off",
+    liveExecution: liveExecutionState(),
     liveNote: decision.broadcast
       ? "Live mode is armed. A match broadcasts only after simulate_intents succeeds and the size cap passes."
       : decision.reason,
@@ -1078,21 +1150,46 @@ async function commitUnlocked(input: { previewId: string; take?: SignedIntent | 
   };
 }
 
-export async function cancel(input: { id: string; account: string }) {
-  return lock(async () => {
-    await boot();
-    const account = input.account.toLowerCase();
-    const order = memory().orders.find((item) => item.id === input.id);
-    if (!order || order.owner !== account) throw new EngineError(404, "Order not found for this account");
-    if (order.status !== "OPEN") throw new EngineError(409, `Order is ${order.status}`);
-    order.status = "CANCELLED";
-    order.reservedBy = undefined;
-    order.reservedUntil = undefined;
-    rememberNonce(order.owner, order.nonce);
-    persist();
-    emit("book");
-    return { ok: true, order: publicOrder(order), onChain: ONCHAIN_CANCEL_NOTE };
-  });
+function cancelMessage(signerId: string, deadline: string, orderId: string): string {
+  return JSON.stringify({ signer_id: signerId, deadline, intents: [{ intent: "cancel", order_id: orderId }] });
+}
+
+/**
+ * Builds the cancel message the owner signs. It uses the same signing standard as orders.
+ * The "cancel" intent is unknown to intents.near, so the signature cannot be replayed there.
+ */
+export async function cancelPreview(input: { id: string; account: string; standard?: string }) {
+  await boot();
+  const account = requireBookAccount(input.account);
+  const order = memory().orders.find((item) => item.id === input.id && sameAccount(item.owner, account));
+  if (!order) throw new EngineError(404, "Order not found for this account");
+  if (order.status !== "OPEN") throw new EngineError(409, `Order is ${order.status}`);
+  const protocol = requireProtocol();
+  const deadline = iso(Date.now() + 5 * 60 * 1000);
+  const nonce = bytesToBase64(makeNonce(protocol.salt, Date.parse(deadline)));
+  const standard = signingStandard(account, input.standard);
+  return {
+    id: order.id,
+    standard,
+    nonce,
+    deadline,
+    message: messageFor(standard, cancelMessage(account, deadline, order.id), nonce),
+    note: "Sign to cancel. The signature only works for this order and expires in 5 minutes.",
+  };
+}
+
+async function cancelUnlocked(input: { id: string; account: string }) {
+  await boot();
+  const order = memory().orders.find((item) => item.id === input.id);
+  if (!order || !sameAccount(order.owner, input.account)) throw new EngineError(404, "Order not found for this account");
+  if (order.status !== "OPEN") throw new EngineError(409, `Order is ${order.status}`);
+  order.status = "CANCELLED";
+  order.reservedBy = undefined;
+  order.reservedUntil = undefined;
+  rememberNonce(order.owner, order.nonce);
+  persist();
+  emit("book");
+  return { ok: true, order: publicOrder(order), onChain: ONCHAIN_CANCEL_NOTE };
 }
 
 export async function balances(accountRaw: string) {
@@ -1171,20 +1268,26 @@ export async function withdrawPreview(input: {
   chain: "near" | "other";
   destinationAsset?: string;
   dry?: boolean;
+  standard?: string;
 }) {
   await boot();
   const account = requireBookAccount(input.account);
   const protocol = requireProtocol();
   const deadline = iso(Date.now() + 10 * 60 * 1000);
-  const intent = withdrawIntent({
-    tokenId: input.tokenId,
-    receiverId: input.receiverId,
-    amount: input.amount,
-    memo: "intentbook:withdraw",
-  });
+  let intent: ReturnType<typeof withdrawIntent>;
+  try {
+    intent = withdrawIntent({
+      tokenId: input.tokenId,
+      receiverId: input.receiverId,
+      amount: input.amount,
+      memo: "intentbook:withdraw",
+    });
+  } catch (error) {
+    throw new EngineError(400, error instanceof Error ? error.message : "Withdraw is not valid");
+  }
   const nep413 = JSON.stringify({ signer_id: account, deadline, intents: [intent] });
-  const nonce = bytesToBase64(makeNonce(protocol.salt));
-  const standard = signingStandard(account);
+  const nonce = bytesToBase64(makeNonce(protocol.salt, Date.parse(deadline)));
+  const standard = signingStandard(account, input.standard);
   let quote: unknown = null;
   let quoteError: string | null = null;
   if (input.chain === "other") {
@@ -1204,7 +1307,7 @@ export async function withdrawPreview(input: {
     account,
     standard,
     nonce,
-    message: standard === "erc191" ? erc191FromNep413Message(nep413, nonce) : nep413,
+    message: messageFor(standard, nep413, nonce),
     intent,
     quote,
     quoteError,
@@ -1212,22 +1315,46 @@ export async function withdrawPreview(input: {
   };
 }
 
+/** USDC value of a withdraw, for the live cap. Null when the token is not one the book prices. */
+function withdrawValueAtoms(token: string, amount: bigint): bigint | null {
+  const assetId = `nep141:${token}`;
+  if (assetId === USDC_ASSET) return amount;
+  for (const pair of PAIR_IDS) {
+    const spec = PAIRS[pair];
+    if (spec.baseAsset !== assetId) continue;
+    const mid = memory().mids[pair]?.midAtoms;
+    return mid ? quoteAtomsForBase(amount, mid, spec.baseDecimals) : null;
+  }
+  return null;
+}
+
 export async function withdrawSubmit(input: { account: string; signed: SignedIntent }) {
   await boot();
   const account = requireBookAccount(input.account);
-  if (!verifyUserSignature(input.signed, account)) throw new EngineError(400, "Signature did not verify");
+  await requireSigner(input.signed, account);
+  const parsed = parseSignedMessage(input.signed);
+  const intents = parsed.intents ?? [];
+  const withdraw = intents[0];
+  if (intents.length !== 1 || withdraw?.intent !== "ft_withdraw" || !withdraw.token || !/^\d+$/.test(withdraw.amount ?? "")) {
+    throw new EngineError(400, "This endpoint only accepts one signed ft_withdraw intent");
+  }
+  requireFreshDeadline(parsed.deadline, "Withdraw");
   const protocol = requireProtocol();
   if (saltOf(input.signed) !== protocol.salt) throw new EngineError(400, "Nonce salt is stale");
   const simulate = await simulateIntents([input.signed]);
   const verdict = interpretSimulation(simulate);
-  const decision = executionDecision({
-    live: liveRequested(),
-    verdict: verdict.kind,
-    baseQty: 1n,
-    lot: 1n,
-    quoteQty: 1n,
-    relayerConfigured: relayerConfigured(),
-  });
+  const value = withdrawValueAtoms(withdraw.token, BigInt(withdraw.amount!));
+  const decision =
+    liveRequested() && value === null
+      ? { broadcast: false, reason: "Live withdraws are limited to USDC and the book's base assets. Refusing to broadcast." }
+      : executionDecision({
+          live: liveRequested(),
+          verdict: verdict.kind,
+          baseQty: 0n,
+          lot: 1n,
+          quoteQty: value ?? 0n,
+          relayerConfigured: relayerConfigured(),
+        });
   if (!decision.broadcast) {
     return { ok: verdict.kind !== "rejected", broadcast: false, verdict: verdict.kind, simulate, note: decision.reason };
   }
@@ -1236,43 +1363,62 @@ export async function withdrawSubmit(input: { account: string; signed: SignedInt
   return { ok: true, broadcast: true, txHash: tx.txHash, explorer: `https://nearblocks.io/txns/${tx.txHash}`, simulate };
 }
 
-export async function burnPreview(input: { id: string; account: string }) {
-  await boot();
-  const account = requireBookAccount(input.account);
-  const order = memory().orders.find((item) => item.id === input.id && sameAccount(item.owner, account));
+function ownedOrder(id: string, accountRaw: string): { account: string; order: StoredOrder } {
+  const account = requireBookAccount(accountRaw);
+  const order = memory().orders.find((item) => item.id === id && sameAccount(item.owner, account));
   if (!order) throw new EngineError(404, "Order not found for this account");
+  return { account, order };
+}
+
+export async function burnPreview(input: { id: string; account: string; standard?: string }) {
+  await boot();
+  const { account, order } = ownedOrder(input.id, input.account);
   const deadline = iso(Date.now() + 10 * 60 * 1000);
   const nep413 = emptyIntentMessage(account, deadline);
-  const standard = signingStandard(account);
+  const standard = signingStandard(account, input.standard);
   return {
     id: order.id,
     nonce: order.nonce,
     standard,
-    message: standard === "erc191" ? erc191FromNep413Message(nep413, order.nonce) : nep413,
+    deadline,
+    message: messageFor(standard, nep413, order.nonce),
     note: ONCHAIN_CANCEL_NOTE,
   };
 }
 
 export async function burnSubmit(input: { id: string; account: string; signed: SignedIntent }) {
   await boot();
-  const preview = await burnPreview({ id: input.id, account: input.account });
-  if (intentMessage(input.signed) !== preview.message) throw new EngineError(400, "Burn signature does not match this order nonce");
-  if (!verifyUserSignature(input.signed, requireBookAccount(input.account))) throw new EngineError(400, "Signature did not verify");
+  const { account, order } = ownedOrder(input.id, input.account);
+  // Rebuilding the preview would make a new deadline, so check the signed message's shape instead.
+  const parsed = parseSignedMessage(input.signed);
+  if (!sameAccount(String(parsed.signer_id ?? ""), account) || (parsed.intents ?? []).length !== 0) {
+    throw new EngineError(400, "A nonce burn is an empty intent signed by the order owner");
+  }
+  if (signedNonce(input.signed) !== order.nonce) throw new EngineError(400, "Burn signature does not use this order's nonce");
+  requireFreshDeadline(parsed.deadline, "Nonce burn");
+  await requireSigner(input.signed, account);
+  if (hasNonce(account, `burn:${order.nonce}`)) throw new EngineError(409, "This order's nonce was already burned");
   const simulate = await simulateIntents([input.signed]);
   const verdict = interpretSimulation(simulate);
   const decision = executionDecision({
     live: liveRequested(),
     verdict: verdict.kind,
-    baseQty: 1n,
+    baseQty: 0n,
     lot: 1n,
     quoteQty: 0n,
     relayerConfigured: relayerConfigured(),
   });
   if (!decision.broadcast) {
-    return { ok: false, broadcast: false, verdict: verdict.kind, simulate, note: `${decision.reason} ${ONCHAIN_CANCEL_NOTE}` };
+    return {
+      ok: verdict.kind !== "rejected",
+      broadcast: false,
+      verdict: verdict.kind,
+      simulate,
+      note: `${decision.reason} ${ONCHAIN_CANCEL_NOTE}`,
+    };
   }
   const tx = await broadcastExecute([input.signed]);
-  rememberNonce(requireBookAccount(input.account), preview.nonce);
+  rememberNonce(account, `burn:${order.nonce}`);
   return { ok: true, broadcast: true, txHash: tx.txHash, explorer: `https://nearblocks.io/txns/${tx.txHash}` };
 }
 
@@ -1407,15 +1553,18 @@ export async function bestQuote(input: { pair: string; side: Side; qty: string; 
   return { ...compared, rhea, legs, winner };
 }
 
+/** Cancel needs the owner's signature over a fresh cancel message for that order. */
 export async function signedCancel(input: { signed: SignedIntent }) {
   await boot();
-  const message = intentMessage(input.signed);
-  const parsed = JSON.parse(message) as { signer_id?: string; intents?: { intent?: string; order_id?: string }[] };
-  const orderId = parsed.intents?.find((intent) => intent.intent === "cancel")?.order_id;
-  const signer = parsed.signer_id || intentSigner(input.signed);
-  if (!orderId) throw new EngineError(400, "Cancel intent needs order_id");
-  if (!verifyUserSignature(input.signed, signer)) throw new EngineError(400, "Signature did not verify");
-  return cancel({ id: orderId, account: signer });
+  if (!input.signed || typeof input.signed !== "object") throw new EngineError(400, "Signed cancel is missing");
+  const parsed = parseSignedMessage(input.signed);
+  const intents = parsed.intents ?? [];
+  const orderId = intents.length === 1 && intents[0]?.intent === "cancel" ? intents[0].order_id : undefined;
+  if (!orderId) throw new EngineError(400, "A cancel message has exactly one cancel intent with an order_id");
+  requireFreshDeadline(parsed.deadline, "Cancel");
+  const account = requireBookAccount(String(parsed.signer_id ?? ""));
+  await requireSigner(input.signed, account);
+  return lock(() => cancelUnlocked({ id: orderId, account }));
 }
 
 export async function accountSummary(accountRaw: string) {
@@ -1423,26 +1572,42 @@ export async function accountSummary(accountRaw: string) {
   const account = requireBookAccount(accountRaw);
   const orderRows = await orders({ account });
   const tradeRows = await trades();
-  const fills = tradeRows.trades.filter((trade) => trade.takerAccount === account || trade.makerAccounts.includes(account));
+  const fills = tradeRows.trades.filter(
+    (trade) => sameAccount(trade.takerAccount, account) || trade.makerAccounts.some((maker) => sameAccount(maker, account)),
+  );
   const balanceRows = await balances(account);
   return { account, orders: orderRows.orders, fills, balances: balanceRows.balances, explorer: balanceRows.explorer };
+}
+
+function webhookMessage(signerId: string, deadline: string, url: string): string {
+  return JSON.stringify({ signer_id: signerId, deadline, intents: [{ intent: "register_webhook", url }] });
+}
+
+export async function webhookPreview(input: { account: string; url: string; standard?: string }) {
+  await boot();
+  const account = requireBookAccount(input.account);
+  const check = webhookUrlProblem(input.url);
+  if (check) throw new EngineError(400, check);
+  const protocol = requireProtocol();
+  const deadline = iso(Date.now() + 5 * 60 * 1000);
+  const nonce = bytesToBase64(makeNonce(protocol.salt, Date.parse(deadline)));
+  const standard = signingStandard(account, input.standard);
+  return { standard, nonce, deadline, message: messageFor(standard, webhookMessage(account, deadline, input.url), nonce) };
 }
 
 export async function registerWebhook(input: { account: string; url: string; signed: SignedIntent }) {
   await boot();
   const account = requireBookAccount(input.account);
-  if (!verifyUserSignature(input.signed, account)) throw new EngineError(400, "Signature did not verify");
-  const message = intentMessage(input.signed);
-  if (!message.includes(input.url)) throw new EngineError(400, "Signed message must include the webhook URL");
-  let parsed: URL;
-  try {
-    parsed = new URL(input.url);
-  } catch {
-    throw new EngineError(400, "Webhook URL is invalid");
+  const problem = webhookUrlProblem(input.url);
+  if (problem) throw new EngineError(400, problem);
+  if (!input.signed || typeof input.signed !== "object") throw new EngineError(400, "Signed registration is missing");
+  const parsed = parseSignedMessage(input.signed);
+  const intents = (parsed.intents ?? []) as { intent?: string; url?: string }[];
+  if (intents.length !== 1 || intents[0]?.intent !== "register_webhook" || intents[0]?.url !== input.url) {
+    throw new EngineError(400, "Sign the message from POST /api/v1/webhooks/preview for this URL");
   }
-  if (parsed.protocol !== "https:" && parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
-    throw new EngineError(400, "Webhook URL must be https, or localhost for tests");
-  }
+  requireFreshDeadline(parsed.deadline, "Webhook registration");
+  await requireSigner(input.signed, account);
   const secret = newWebhookSecret();
   const id = crypto.randomUUID();
   bookStore().saveWebhook({ id, account, url: input.url, secret });

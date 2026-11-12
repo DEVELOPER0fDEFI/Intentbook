@@ -95,6 +95,39 @@ export async function hasPublicKey(accountId: string, publicKey: string): Promis
   }
 }
 
+/**
+ * Whether `publicKey` is a full-access key of the NEAR account `accountId`.
+ * Returns null when every RPC failed, so callers can refuse instead of guessing.
+ */
+export async function fullAccessKey(accountId: string, publicKey: string): Promise<boolean | null> {
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "query",
+    params: { request_type: "view_access_key", finality: "final", account_id: accountId, public_key: publicKey },
+  });
+  for (const rpc of rpcUrls()) {
+    try {
+      const res = await fetch(rpc, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(15000),
+      });
+      const json = (await res.json()) as {
+        error?: { cause?: { name?: string } };
+        result?: { error?: string; permission?: unknown };
+      };
+      if (json.result?.error) return false;
+      if (json.error?.cause?.name === "UNKNOWN_ACCOUNT" || json.error?.cause?.name === "UNKNOWN_ACCESS_KEY") return false;
+      if (json.result && "permission" in json.result) return json.result.permission === "FullAccess";
+    } catch {
+      // Try the next RPC.
+    }
+  }
+  return null;
+}
+
 export async function nonceUsed(accountId: string, nonce: string): Promise<boolean | null> {
   const value = await viewCall("is_nonce_used", { account_id: accountId, nonce });
   return typeof value === "boolean" ? value : null;

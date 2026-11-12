@@ -40,7 +40,7 @@ interface Point {
 interface PreviewLeg {
   message: string;
   nonce: string;
-  standard: "nep413" | "erc191";
+  standard: "nep413" | "erc191" | "raw_ed25519";
   baseQty: string;
   quoteQty: string;
   price: string;
@@ -143,6 +143,7 @@ export function TradeScreen({ referrer = "" }: { referrer?: string }) {
           orderType,
           qty,
           price: orderType === "MARKET" ? undefined : limit,
+          standard: wallet.standard,
           referrer: referrer || undefined,
         }),
       });

@@ -1,5 +1,4 @@
 import { createServer } from "node:http";
-import { parse } from "node:url";
 import next from "next";
 import { ensureSqliteDir } from "./lib/store";
 import { attachWs } from "./lib/ws-server";
@@ -14,9 +13,9 @@ const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
 void app.prepare().then(() => {
+  // Next parses the URL itself. node:url parse() is deprecated.
   const server = createServer((req, res) => {
-    const parsed = parse(req.url || "/", true);
-    void handle(req, res, parsed);
+    void handle(req, res);
   });
   attachWs(server);
   server.listen(port, hostname, () => {

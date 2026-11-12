@@ -1,4 +1,4 @@
-import { accountSummary, balances, bestQuote, book, boot, burnPreview, burnSubmit, candles, cancel, commit, depth, EngineError, health, keyStatus, nearDepositTemplate, orders, preview, priceCompare, quoteDeposit, quoteFallback, referrerStats, registerWebhook, signedCancel, subscribe, ticker, trackDeposit, trades, withdrawPreview, withdrawSubmit } from "@/lib/engine";
+import { accountSummary, balances, bestQuote, book, boot, burnPreview, burnSubmit, cancelPreview, candles, commit, depth, EngineError, health, keyStatus, nearDepositTemplate, orders, preview, priceCompare, quoteDeposit, quoteFallback, referrerStats, registerWebhook, signedCancel, subscribe, ticker, trackDeposit, trades, webhookPreview, withdrawPreview, withdrawSubmit } from "@/lib/engine";
 import { json, options, run } from "@/lib/http";
 import type { Side, SignedIntent } from "@/lib/types";
 
@@ -7,6 +7,10 @@ export const runtime = "nodejs";
 
 export function OPTIONS() {
   return options();
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
 }
 
 async function pathOf(ctx: { params: Promise<{ path?: string[] }> }) {
@@ -71,6 +75,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ path?: string[
         qty: String(body.qty ?? ""),
         price: body.price == null ? undefined : String(body.price),
         deadlineSeconds: body.deadlineSeconds == null ? undefined : Number(body.deadlineSeconds),
+        standard: optionalString(body.standard),
         referrer: body.referrer == null ? undefined : String(body.referrer),
       });
     }
@@ -81,9 +86,15 @@ export async function POST(req: Request, ctx: { params: Promise<{ path?: string[
         rest: (body.rest as SignedIntent | null | undefined) ?? null,
       });
     }
+    if (name === "orders/cancel-preview") {
+      return cancelPreview({ id: String(body.id ?? ""), account: String(body.account ?? ""), standard: optionalString(body.standard) });
+    }
     if (name === "orders/cancel") {
-      if (body.signed) return signedCancel({ signed: body.signed as SignedIntent });
-      return cancel({ id: String(body.id ?? ""), account: String(body.account ?? "") });
+      if (!body.signed) throw new EngineError(400, "Cancel needs a signed cancel message. Get one from POST /api/v1/orders/cancel-preview.");
+      return signedCancel({ signed: body.signed as SignedIntent });
+    }
+    if (name === "webhooks/preview") {
+      return webhookPreview({ account: String(body.account ?? ""), url: String(body.url ?? ""), standard: optionalString(body.standard) });
     }
     if (name === "webhooks") {
       return registerWebhook({
@@ -117,13 +128,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ path?: string[
         chain: body.chain === "other" ? "other" : "near",
         destinationAsset: body.destinationAsset == null ? undefined : String(body.destinationAsset),
         dry: body.dry === false ? false : true,
+        standard: optionalString(body.standard),
       });
     }
     if (name === "withdraw") {
       return withdrawSubmit({ account: String(body.account ?? ""), signed: body.signed as SignedIntent });
     }
     if (name === "orders/burn-preview") {
-      return burnPreview({ id: String(body.id ?? ""), account: String(body.account ?? "") });
+      return burnPreview({ id: String(body.id ?? ""), account: String(body.account ?? ""), standard: optionalString(body.standard) });
     }
     if (name === "orders/burn") {
       return burnSubmit({

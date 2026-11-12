@@ -19,6 +19,8 @@ export interface ExecutionInput {
   lot: bigint;
   quoteQty: bigint;
   relayerConfigured: boolean;
+  /** Matches only: the operator and market-maker keys come from the environment, not a per-boot throwaway key. */
+  persistentKeys?: boolean;
 }
 
 export function executionDecision(input: ExecutionInput): { broadcast: boolean; reason: string } {
@@ -29,6 +31,13 @@ export function executionDecision(input: ExecutionInput): { broadcast: boolean; 
     return {
       broadcast: false,
       reason: "INTENTBOOK_LIVE=1 but the relayer account is not configured. Refusing to broadcast.",
+    };
+  }
+  if (input.persistentKeys === false) {
+    return {
+      broadcast: false,
+      reason:
+        "INTENTBOOK_LIVE=1 but INTENTBOOK_OPERATOR_SECRET and INTENTBOOK_MM_SECRET are not both set. Fees and quotes would use a throwaway key. Refusing to broadcast.",
     };
   }
   if (input.verdict !== "executed") {

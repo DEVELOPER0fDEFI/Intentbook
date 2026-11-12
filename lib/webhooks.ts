@@ -10,6 +10,56 @@ export function signWebhook(secret: string, body: string): string {
   return createHmac("sha256", secret).update(body).digest("hex");
 }
 
+function privateIpv4(host: string): boolean {
+  const parts = host.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts as [number, number, number, number];
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    a >= 224
+  );
+}
+
+function internalHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true;
+  if (privateIpv4(host)) return true;
+  if (host.includes(":")) {
+    if (host === "::" || host === "::1") return true;
+    if (/^f[cd]/.test(host) || /^fe[89ab]/.test(host)) return true;
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(host);
+    if (mapped && privateIpv4(mapped[1]!)) return true;
+  }
+  return false;
+}
+
+/**
+ * Null when the URL may receive webhooks. Production allows only https to public hosts.
+ * Development also allows http to localhost for tests. Hostnames are not resolved here,
+ * so a public name that resolves to a private address is not caught.
+ */
+export function webhookUrlProblem(raw: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "Webhook URL is invalid";
+  }
+  const production = env.NODE_ENV === "production";
+  const local = internalHost(url.hostname);
+  if (!production && local && (url.protocol === "http:" || url.protocol === "https:")) return null;
+  if (url.protocol !== "https:") return "Webhook URL must be https";
+  if (local) return "Webhook URL must point at a public host";
+  if (url.username || url.password) return "Webhook URL must not contain credentials";
+  return null;
+}
+
 export function newWebhookSecret(): string {
   return `ib_${randomBytes(24).toString("hex")}`;
 }
