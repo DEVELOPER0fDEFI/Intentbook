@@ -75,33 +75,86 @@ export async function rheaNearPrice(): Promise<{ atoms: bigint; human: string } 
   return { atoms: perNear, human: formatAtoms(perNear, USDC_DECIMALS, 4) };
 }
 
+const KRAKEN_TICKER = "https://api.kraken.com/0/public/Ticker?pair=XBTUSD,ETHUSD,SOLUSD,NEARUSD";
+/** Kraken renames some pairs in its response (XBTUSD comes back as XXBTZUSD). */
+const KRAKEN_KEYS: Record<PairId, string[]> = {
+  "BTC-USDC": ["XXBTZUSD", "XBTUSD"],
+  "ETH-USDC": ["XETHZUSD", "ETHUSD"],
+  "SOL-USDC": ["SOLUSD"],
+  "NEAR-USDC": ["NEARUSD"],
+};
+let krakenPausedUntil = 0;
+
+/** Mid of Kraken's best bid and best ask for each pair, in USD. */
+export function parseKrakenMids(body: unknown): Partial<Record<PairId, number>> {
+  const result = (body as { result?: Record<string, { a?: string[]; b?: string[] }> } | null)?.result;
+  const out: Partial<Record<PairId, number>> = {};
+  if (!result || typeof result !== "object") return out;
+  for (const [pair, keys] of Object.entries(KRAKEN_KEYS) as [PairId, string[]][]) {
+    const row = keys.map((key) => result[key]).find(Boolean);
+    const ask = Number(row?.a?.[0]);
+    const bid = Number(row?.b?.[0]);
+    if (Number.isFinite(ask) && Number.isFinite(bid) && bid > 0 && ask >= bid) out[pair] = (ask + bid) / 2;
+  }
+  return out;
+}
+
+/**
+ * Live spot mids from Kraken's public ticker (no key). After a failure it pauses for a minute,
+ * so an unreachable Kraken never slows the book; REFERENCE_FEED=1click turns it off.
+ */
+export async function krakenMids(): Promise<Partial<Record<PairId, number>>> {
+  if (process.env.REFERENCE_FEED === "1click" || Date.now() < krakenPausedUntil) return {};
+  try {
+    const res = await fetch(KRAKEN_TICKER, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error(`Kraken ticker failed (${res.status})`);
+    return parseKrakenMids(await res.json());
+  } catch {
+    krakenPausedUntil = Date.now() + 60_000;
+    return {};
+  }
+}
+
+const usdToAtoms = (usd: number) => BigInt(Math.round(usd * 10 ** USDC_DECIMALS));
+
+/**
+ * Reference mid per pair, which the maker ladder quotes around.
+ * NEAR follows the on-chain Rhea NEAR/USDC pool, which moves with every trade there.
+ * BTC, ETH and SOL follow Kraken's live best bid and ask.
+ * 1Click token prices (about one update a minute) are the fallback for all four.
+ */
 export async function referencePrices(): Promise<ReferencePrice[]> {
-  const tokens = await getTokens();
+  const [tokens, kraken, rhea] = await Promise.all([
+    getTokens().catch(() => [] as TokenRow[]),
+    krakenMids(),
+    rheaNearPrice().catch(() => null),
+  ]);
   const byId = new Map(tokens.map((row) => [row.assetId, row]));
   const usdc = byId.get(USDC_ASSET);
   const usdcPrice = usdc?.price && usdc.price > 0 ? usdc.price : 1;
-  let rhea: { atoms: bigint; human: string } | null = null;
-  try {
-    rhea = await rheaNearPrice();
-  } catch {
-    rhea = null;
-  }
   const out: ReferencePrice[] = [];
   for (const spec of Object.values(PAIRS)) {
     const row = byId.get(spec.baseAsset);
-    if (!row?.price || row.price <= 0) continue;
-    const usd = row.price / usdcPrice;
-    // NEAR follows the on-chain Rhea NEAR/USDC pool: it moves with every trade there, while
-    // 1Click prices refresh about once a minute and only to two decimals. Others use 1Click.
-    const fromRhea = spec.id === "NEAR-USDC" && rhea !== null && rhea.atoms > 0n;
-    const midAtoms = fromRhea ? rhea!.atoms : BigInt(Math.round(usd * 10 ** USDC_DECIMALS));
+    const krakenUsd = kraken[spec.id];
+    let midAtoms = 0n;
+    let source = "";
+    if (spec.id === "NEAR-USDC" && rhea && rhea.atoms > 0n) {
+      midAtoms = rhea.atoms;
+      source = "rhea:NEAR/USDC pool";
+    } else if (krakenUsd) {
+      midAtoms = usdToAtoms(krakenUsd / usdcPrice);
+      source = "kraken:spot";
+    } else if (row?.price && row.price > 0) {
+      midAtoms = usdToAtoms(row.price / usdcPrice);
+      source = "1click:/v0/tokens";
+    }
     if (midAtoms <= 0n) continue;
     out.push({
       pair: spec.id,
       midAtoms,
       mid: formatPrice(midAtoms),
-      source: fromRhea ? "rhea:NEAR/USDC pool" : "1click:/v0/tokens",
-      updatedAt: row.priceUpdatedAt,
+      source,
+      updatedAt: row?.priceUpdatedAt,
       rheaMid: spec.id === "NEAR-USDC" ? rhea?.human : undefined,
     });
   }

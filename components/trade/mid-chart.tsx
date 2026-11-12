@@ -63,7 +63,7 @@ export function MidChart({ points, mid, source, rheaMid, base }: { points: Point
         </svg>
       )}
       <p className="nums border-t border-line px-4 py-2 text-[0.625rem] uppercase tracking-[0.12em] text-faint">
-        Sampled from 1Click /v0/tokens · the maker ladder quotes around it
+        Sampled every 10 seconds · the maker ladder quotes around it
       </p>
     </section>
   );

@@ -49,7 +49,7 @@ The home page explains the idea, then opens the trading terminal. Nothing is con
 
 ## Try it
 
-1. `npm run dev` and open the home page. See four markets and a maker ladder around a reference mid. BTC, ETH and SOL use `GET https://1click.chaindefuser.com/v0/tokens`; NEAR follows the on-chain Rhea NEAR/USDC pool (`https://smartx.rhea.finance/swapMultiDexPath`). Prices are sampled every 10 seconds and the ladder re-quotes whenever the mid moves 1 bp, so the book, the chart and the mid arrow move with the market.
+1. `npm run dev` and open the home page. See four markets and a maker ladder around a reference mid. BTC, ETH and SOL follow the best bid and ask on Kraken's public ticker, NEAR follows the on-chain Rhea NEAR/USDC pool (`https://smartx.rhea.finance/swapMultiDexPath`), and 1Click `GET https://1click.chaindefuser.com/v0/tokens` is the fallback for all four. Prices are sampled every 10 seconds and the ladder re-quotes whenever the mid moves 1 bp, so the book, the chart and the mid arrow move with the market.
 2. In the order ticket, click **Use demo key**, pick **Buy** and **Market**, keep one lot, and click **Preview**. See **What you sign**: the exact `token_diff` payload. Click **Sign & buy**. The demo key signs locally, the order takes the best ask, and a receipt appears with a **Signed · unfunded** stamp. Its raw result from `simulate_intents` says `insufficient balance or overflow`, because the signatures passed and only the balance check failed. A bad signature would say `invalid signature`. The taker fee is 8 bps and the maker fee is 0.
 3. Type `sell 0.0001 btc at 200k` in the ticket's sentence box and press **Fill**. The ticket fills in a resting limit order. Tap any price in the book to use it as the limit.
 4. Open **Orders** and click **Rest a 20-second bid**. **Cancel** signs a cancel message and removes the order. **Burn nonce** signs an empty intent with the order's nonce and simulates it, which is how a nonce is spent on chain. Leave a bid alone for 20 seconds and see `EXPIRED`.
@@ -84,7 +84,7 @@ flowchart TD
   U[Browser wallet or demo key] -->|NEP-413 or ERC-191 token_diff| W[Next.js app]
   W --> B[Price-time matcher]
   M[Market maker ladder] -->|signed quotes| B
-  P[1Click token prices and Rhea] --> M
+  P[Kraken spot, Rhea pool, 1Click prices] --> M
   B --> S[Batch plus taker fee plus protocol closure]
   S -->|simulate_intents| V[intents.near]
   S -->|execute_intents only if live checks pass| V
@@ -195,6 +195,7 @@ Pairs: `BTC-USDC`, `ETH-USDC`, `SOL-USDC`, `NEAR-USDC`. Asset ids are loaded fro
 | `INTENTS_CONTRACT` | No | Defaults to `intents.near`. |
 | `ONECLICK_BASE` | No | Defaults to `https://1click.chaindefuser.com`. |
 | `MM_INTERVAL_MS` | No | Reference price sampling and maker refresh. Default 10000. |
+| `REFERENCE_FEED` | No | Set to `1click` to skip Kraken and use 1Click prices (and Rhea for NEAR) only. |
 | `SQLITE_PATH` | No | Default `.data/intentbook.sqlite`. |
 
 ## Deploy to Railway
