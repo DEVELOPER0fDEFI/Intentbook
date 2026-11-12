@@ -247,4 +247,4 @@ The directory is created if it is missing. Do not commit secrets.
 
 ## Disclosure
 
-Built for NEAR Hackathon in November 2026. Code was written with an AI coding agent. Libraries: Next.js, React, Tailwind CSS, Radix UI, NEAR Wallet Selector, `near-api-js`, `@noble/curves`, `@noble/hashes`, `bs58`. No pre-hackathon product code. Apache License 2.0. See `LICENSE`.
+Built for NEAR Hackathon in November 2026. Code was written with an AI coding agent. Token logos come from @web3icons/core (MIT); see `public/tokens/NOTICE.txt`. Libraries: Next.js, React, Tailwind CSS, Radix UI, NEAR Wallet Selector, `near-api-js`, `@noble/curves`, `@noble/hashes`, `bs58`. No pre-hackathon product code. Apache License 2.0. See `LICENSE`.

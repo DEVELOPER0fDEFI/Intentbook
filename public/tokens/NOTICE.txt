@@ -1,0 +1,2 @@
+Token logos from @web3icons/core 4.0.59 (https://web3icons.io, https://github.com/0xa3k5/web3icons), MIT License, by 0xa3k5.
+The logos are trademarks of their respective projects and are used only to identify the assets traded on the book.

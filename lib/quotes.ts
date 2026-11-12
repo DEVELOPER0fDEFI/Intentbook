@@ -100,17 +100,17 @@ export function parseKrakenMids(body: unknown): Partial<Record<PairId, number>> 
 }
 
 /**
- * Live spot mids from Kraken's public ticker (no key). After a failure it pauses for a minute,
+ * Live spot mids from Kraken's public ticker (no key). After a failure it pauses for 30 seconds,
  * so an unreachable Kraken never slows the book; REFERENCE_FEED=1click turns it off.
  */
 export async function krakenMids(): Promise<Partial<Record<PairId, number>>> {
   if (process.env.REFERENCE_FEED === "1click" || Date.now() < krakenPausedUntil) return {};
   try {
-    const res = await fetch(KRAKEN_TICKER, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(KRAKEN_TICKER, { signal: AbortSignal.timeout(6000) });
     if (!res.ok) throw new Error(`Kraken ticker failed (${res.status})`);
     return parseKrakenMids(await res.json());
   } catch {
-    krakenPausedUntil = Date.now() + 60_000;
+    krakenPausedUntil = Date.now() + 30_000;
     return {};
   }
 }

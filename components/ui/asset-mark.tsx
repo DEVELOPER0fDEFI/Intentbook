@@ -1,20 +1,37 @@
 import { cn } from "@/lib/cn";
 
-const MARKS: Record<string, { glyph: string; className: string }> = {
-  BTC: { glyph: "₿", className: "bg-gold/15 text-gold border-gold/30" },
-  ETH: { glyph: "Ξ", className: "bg-ink/10 text-ink border-ink/25" },
-  SOL: { glyph: "◎", className: "bg-bid/12 text-bid border-bid/30" },
-  NEAR: { glyph: "Ⓝ", className: "bg-lime/12 text-lime border-lime/30" },
-  USDC: { glyph: "$", className: "bg-panel-3 text-ink border-line-strong" },
-};
+/** Official logos, from @web3icons/core (MIT). See public/tokens/NOTICE.txt. */
+const LOGOS = new Set(["BTC", "ETH", "SOL", "NEAR", "USDC"]);
 
-/** Letter-mark for an asset symbol. Not a logo: a typographic stand-in. */
+const SIZES = { sm: "size-5", md: "size-7", lg: "size-10" } as const;
+const PIXELS = { sm: 20, md: 28, lg: 40 } as const;
+
+/** The asset's logo; a lettered disc for anything without one. */
 export function AssetMark({ symbol, size = "md", className }: { symbol: string; size?: "sm" | "md" | "lg"; className?: string }) {
-  const mark = MARKS[symbol.toUpperCase()] ?? { glyph: symbol.slice(0, 1), className: "bg-panel-3 text-ink border-line-strong" };
-  const sizes = { sm: "size-5 text-[0.6875rem]", md: "size-7 text-sm", lg: "size-10 text-lg" } as const;
+  const sym = symbol.toUpperCase();
+  if (LOGOS.has(sym)) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- tiny static SVGs; next/image would add nothing here
+      <img
+        src={`/tokens/${sym.toLowerCase()}.svg`}
+        alt=""
+        aria-hidden
+        width={PIXELS[size]}
+        height={PIXELS[size]}
+        className={cn("shrink-0 rounded-full", SIZES[size], className)}
+      />
+    );
+  }
   return (
-    <span aria-hidden className={cn("inline-grid shrink-0 place-items-center rounded-full border font-medium", sizes[size], mark.className, className)}>
-      {mark.glyph}
+    <span
+      aria-hidden
+      className={cn(
+        "inline-grid shrink-0 place-items-center rounded-full border border-line-strong bg-panel-3 text-[0.6875rem] font-medium text-ink",
+        SIZES[size],
+        className,
+      )}
+    >
+      {sym.slice(0, 1)}
     </span>
   );
 }
