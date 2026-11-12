@@ -15,8 +15,9 @@ export function TickerTape() {
       return {
         key: row.pair,
         label: row.pair.replace("-", "/"),
-        value: `${row.mid ?? "…"}${pct === null ? "" : ` ${pct >= 0 ? "▲" : "▼"} ${Math.abs(pct).toFixed(2)}%`}`,
-        tone: (pct === null || pct === 0 ? "flat" : pct > 0 ? "up" : "down") as "up" | "down" | "flat",
+        // Under 0.005% rounds to 0.00%, so it shows no arrow.
+        value: `${row.mid ?? "…"}${pct === null || Math.abs(pct) < 0.005 ? "" : ` ${pct > 0 ? "▲" : "▼"} ${Math.abs(pct).toFixed(2)}%`}`,
+        tone: (pct === null || Math.abs(pct) < 0.005 ? "flat" : pct > 0 ? "up" : "down") as "up" | "down" | "flat",
       };
     }),
     { key: "maker", label: "Maker fee", value: `${health?.makerFeeBps ?? 0} bps` },

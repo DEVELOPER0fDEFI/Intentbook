@@ -46,7 +46,7 @@ export function PairBar({ pair, rows, onSelect }: { pair: PairId; rows: TickerRo
               </span>
               <span className="nums block text-xs text-muted">
                 {row?.mid ? `$${row.mid}` : "…"}
-                {pct === null ? null : <span className={cn("ml-1.5", pct >= 0 ? "text-bid" : "text-ask")}>{`${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`}</span>}
+                {pct === null || Math.abs(pct) < 0.005 ? null : <span className={cn("ml-1.5", pct >= 0 ? "text-bid" : "text-ask")}>{`${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`}</span>}
               </span>
             </span>
             <Spark points={row?.history ?? []} up={(pct ?? 0) >= 0} />

@@ -32,15 +32,18 @@ interface WalletApi {
   session: WalletSession | null;
   /** Send this as `standard` in every preview request. */
   standard: SignStandard;
+  /** False until a saved session has been restored or ruled out. */
+  ready: boolean;
   busy: boolean;
   error: string;
   connectNear: () => Promise<void>;
   connectEvm: () => Promise<void>;
   connectSolana: () => Promise<void>;
-  /** Signs out of the current wallet and returns to the demo key. */
+  /** Signs out of the current wallet and leaves the visitor disconnected. */
   disconnect: () => Promise<void>;
   registerNearKey: () => Promise<void>;
-  useDemo: () => void;
+  /** Creates (or reuses) the browser demo key and selects it. */
+  selectDemo: () => void;
   signLeg: (leg: SignLeg) => Promise<SignedIntent>;
   nearDeposit: (call: NearCall) => Promise<string>;
   /** Several function calls to one contract in a single wallet transaction. */
@@ -131,10 +134,10 @@ function prefixKey(value: string, kind: "ed25519"): string {
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<WalletSession | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const demo = loadDemoKey();
     void (async () => {
       const savedRaw = window.sessionStorage.getItem(STORAGE);
       const parsed = savedRaw ? (JSON.parse(savedRaw) as WalletSession) : null;
@@ -186,9 +189,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           // No NEAR session to restore.
         }
       }
-      // Anything that could not be restored (a locked MetaMask, an unapproved Phantom) falls back to the demo key.
-      setSession({ kind: "demo", accountId: demo.accountId });
-    })();
+      if (saved?.kind === "demo") {
+        setSession({ kind: "demo", accountId: loadDemoKey().accountId });
+        return;
+      }
+      // Nothing to restore: stay disconnected until the visitor picks a signer.
+    })().finally(() => setReady(true));
   }, []);
 
   function remember(next: WalletSession) {
@@ -304,12 +310,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     } catch {
       // Signing out of the wallet is best effort. The session is cleared either way.
     }
-    const demo = loadDemoKey();
     nearWallet = null;
-    remember({ kind: "demo", accountId: demo.accountId });
+    setSession(null);
+    window.sessionStorage.removeItem(STORAGE);
+    setError("");
   }
 
-  function useDemo() {
+  function selectDemo() {
     const demo = loadDemoKey();
     nearWallet = null;
     remember({ kind: "demo", accountId: demo.accountId });
@@ -385,6 +392,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const value: WalletApi = {
     session,
     standard: standardFor(session),
+    ready,
     busy,
     error,
     connectNear,
@@ -392,7 +400,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     connectSolana,
     disconnect,
     registerNearKey,
-    useDemo,
+    selectDemo,
     signLeg,
     nearDeposit,
     nearCalls,

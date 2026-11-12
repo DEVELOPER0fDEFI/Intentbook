@@ -29,6 +29,7 @@ export async function run(fn: () => Promise<unknown>): Promise<Response> {
   } catch (error) {
     if (error instanceof EngineError) return json({ error: error.message }, error.status);
     const message = error instanceof Error ? error.message : "unknown error";
-    return json({ error: message }, 500);
+    const status = typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : 500;
+    return json({ error: message }, status);
   }
 }

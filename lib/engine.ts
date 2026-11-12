@@ -13,6 +13,7 @@ import { MAKER_FEE_BPS, TAKER_FEE_BPS, takerLeg } from "./fees";
 import {
   formatAtoms,
   formatFee,
+  formatPrice,
   formatUsd,
   isEvmAddress,
   parseAtoms,
@@ -304,7 +305,7 @@ function levels(pair: PairId, side: Side) {
     const quote = quoteAtomsForBase(row.qty, row.price, spec.baseDecimals);
     cum += quote;
     return {
-      price: formatUsd(row.price),
+      price: formatPrice(row.price),
       priceAtoms: row.price.toString(),
       qty: formatAtoms(row.qty, spec.baseDecimals, 8),
       qtyAtoms: row.qty.toString(),
@@ -317,6 +318,10 @@ function levels(pair: PairId, side: Side) {
 
 const backstopFailed = new Set<string>();
 const MM_LEVELS = 6;
+/** The maker re-quotes the ladder when the reference mid moves at least this much. */
+const MM_REQUOTE_BPS = 1n;
+/** Mid samples kept per pair: one hour at the default 10-second refresh. */
+const HISTORY_POINTS = 360;
 let mmSequence = 0;
 
 function rememberMids(prices: ReferencePrice[]) {
@@ -325,9 +330,9 @@ function rememberMids(prices: ReferencePrice[]) {
   for (const price of prices) {
     state.mids[price.pair] = price;
     const series = state.history[price.pair];
-    const mid = Number(formatUsd(price.midAtoms));
+    const mid = Number(formatAtoms(price.midAtoms, 6, 6));
     if (Number.isFinite(mid)) series.push({ t: now, mid });
-    if (series.length > 90) series.splice(0, series.length - 90);
+    if (series.length > HISTORY_POINTS) series.splice(0, series.length - HISTORY_POINTS);
   }
 }
 
@@ -352,7 +357,7 @@ function placeMmOrder(pair: PairId, side: Side, priceAtoms: bigint, qty: bigint)
     side === "SELL"
       ? { [spec.baseAsset]: (-qty).toString(), [USDC_ASSET]: quote.toString() }
       : { [spec.baseAsset]: qty.toString(), [USDC_ASSET]: (-quote).toString() };
-  const memo = `intentbook:${pair}:${side}:${formatUsd(priceAtoms)}`;
+  const memo = `intentbook:${pair}:${side}:${formatPrice(priceAtoms)}`;
   const signed = signTokenDiff({
     secretKey: state.mm.secretKey,
     deadline,
@@ -364,7 +369,7 @@ function placeMmOrder(pair: PairId, side: Side, priceAtoms: bigint, qty: bigint)
     id: crypto.randomUUID(),
     pair,
     side,
-    price: formatUsd(priceAtoms),
+    price: formatPrice(priceAtoms),
     priceAtoms: priceAtoms.toString(),
     qty: qty.toString(),
     originalQty: qty.toString(),
@@ -392,7 +397,7 @@ async function seedUnlocked() {
     const drifted =
       !previous || previous === 0n
         ? true
-        : (price.midAtoms > previous ? price.midAtoms - previous : previous - price.midAtoms) * 10000n / previous >= 5n;
+        : (price.midAtoms > previous ? price.midAtoms - previous : previous - price.midAtoms) * 10000n / previous >= MM_REQUOTE_BPS;
     // Re-quote when the price drifts or when any maker level was filled, so the ladder stays complete.
     const openMm = state.orders.filter((order) => order.role === "mm" && order.pair === price.pair && order.status === "OPEN").length;
     if (openMm >= MM_LEVELS * 2 && !drifted) continue;
@@ -525,7 +530,7 @@ async function settleUnlocked(input: {
   const fill: Fill = {
     id: crypto.randomUUID(),
     pair: input.pair,
-    price: formatUsd(priceAtoms),
+    price: formatPrice(priceAtoms),
     baseQty: formatAtoms(baseQty, spec.baseDecimals, 8),
     quoteQty: formatUsd(quoteQty),
     makerIds: input.makerOrders.map((order) => order.id),
@@ -678,7 +683,7 @@ async function bootInner() {
     state.authProbe = { error: error instanceof Error ? error.message : String(error) };
   }
   state.started = true;
-  const refreshMs = Number(process.env.MM_INTERVAL_MS || 45000);
+  const refreshMs = Number(process.env.MM_INTERVAL_MS || 10000);
   setInterval(() => {
     void lock(async () => {
       try {
@@ -771,7 +776,7 @@ export async function book(pairRaw: string) {
     rheaMid: ref?.rheaMid ?? null,
     bestBid: bids[0]?.price ?? null,
     bestAsk: asks[0]?.price ?? null,
-    spread: bestBid != null && bestAsk != null ? formatUsd(bestAsk - bestBid) : null,
+    spread: bestBid != null && bestAsk != null ? formatPrice(bestAsk - bestBid) : null,
     lot: lotFor(pair),
     bids,
     asks,
@@ -847,7 +852,7 @@ function prepareLeg(input: {
     standard,
     baseQty: formatAtoms(input.baseQty, input.baseDecimals, 8),
     quoteQty: formatUsd(input.quoteQty),
-    price: formatUsd(input.priceAtoms),
+    price: formatPrice(input.priceAtoms),
     fee: formatFee(input.fee ?? 0n),
     deadline: input.deadline,
     lotIds: input.lotIds,
@@ -936,7 +941,7 @@ async function previewUnlocked(input: {
       account,
       deadline: iso(now + seconds * 1000),
       diff,
-      memo: `intentbook:${pair}:${input.side}:${formatUsd(limit)}`,
+      memo: `intentbook:${pair}:${input.side}:${formatPrice(limit)}`,
       salt: protocol.salt,
       baseQty: selected.leftover,
       quoteQty: quote,
@@ -1091,7 +1096,7 @@ async function commitUnlocked(input: { previewId: string; take?: SignedIntent | 
         id: crypto.randomUUID(),
         pair: preview.pair,
         side: preview.side,
-        price: formatUsd(price),
+        price: formatPrice(price),
         priceAtoms: price.toString(),
         qty: qty.toString(),
         originalQty: qty.toString(),

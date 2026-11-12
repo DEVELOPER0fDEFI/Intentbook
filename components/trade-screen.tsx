@@ -1,6 +1,7 @@
 "use client";
 
 import { Activity } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { PriceCompare } from "@/components/price-compare";
 import { useTicker } from "@/components/site/use-market";
@@ -33,7 +34,9 @@ function MatchTape({ trades, base }: { trades: FillView[]; base: string }) {
     <section className="rounded-[var(--radius-panel)] border border-line bg-panel/90" aria-label="Recent matches">
       <header className="flex min-h-11 items-center justify-between border-b border-line px-4">
         <p className="eyebrow text-muted">Recent matches</p>
-        <p className="nums text-[0.625rem] text-faint">every fill is simulated on mainnet</p>
+        <Link href="/activity" className="nums text-[0.625rem] uppercase tracking-[0.12em] text-lime hover:underline">
+          All activity →
+        </Link>
       </header>
       {trades.length === 0 ? (
         <EmptyState

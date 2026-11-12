@@ -41,13 +41,15 @@ export function useTicker(intervalMs = 8000): TickerRow[] {
   return rows;
 }
 
+let healthRequest: Promise<Health | null> | null = null;
+
 export function useHealth(): Health | null {
   const [health, setHealth] = useState<Health | null>(null);
   useEffect(() => {
-    fetch("/api/v1/health")
-      .then((res) => res.json())
-      .then((data: Health) => setHealth(data))
-      .catch(() => undefined);
+    healthRequest ??= fetch("/api/v1/health")
+      .then((res) => res.json() as Promise<Health>)
+      .catch(() => null);
+    void healthRequest.then((data) => setHealth(data));
   }, []);
   return health;
 }

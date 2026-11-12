@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpenText, Code2, ListOrdered, Wallet as WalletIcon } from "lucide-react";
+import { BookOpenText, Bot, Code2, ListOrdered, Wallet as WalletIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useHealth } from "@/components/site/use-market";
@@ -13,6 +13,7 @@ export const NAV = [
   { href: "/", label: "Trade", icon: BookOpenText },
   { href: "/orders", label: "Orders", icon: ListOrdered },
   { href: "/funds", label: "Funds", icon: WalletIcon },
+  { href: "/agents", label: "Agents", icon: Bot },
   { href: "/developers", label: "Build", icon: Code2 },
 ];
 
@@ -107,7 +108,7 @@ export function BottomNav() {
       aria-label="Main"
       className="fixed inset-x-0 bottom-0 z-50 border-t border-line bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
     >
-      <ul className="grid grid-cols-4">
+      <ul className="grid grid-cols-5">
         {NAV.map((link) => {
           const active = pathname === link.href;
           const Icon = link.icon;
@@ -143,6 +144,9 @@ export function SiteFooter() {
           <a className="hover:text-ink" href="https://github.com/DEVELOPER0fDEFI/Intentbook" target="_blank" rel="noreferrer">
             GitHub ↗︎
           </a>
+          <Link className="hover:text-ink" href="/activity">
+            Activity
+          </Link>
           <a className="hover:text-ink" href="/openapi.json">
             OpenAPI
           </a>

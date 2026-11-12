@@ -2,6 +2,7 @@
 
 import { Sparkles } from "lucide-react";
 import { useState } from "react";
+import { ConnectButtons } from "@/components/site/connect-prompt";
 import { MatchReceipt } from "@/components/trade/receipt";
 import { STANDARD_LABEL, type Book, type PlaceResult, type Preview, type PreviewLeg } from "@/components/trade/types";
 import { useWallet } from "@/components/wallet";
@@ -239,14 +240,21 @@ export function OrderTicket({
           </p>
         ) : null}
 
-        <div className="grid grid-cols-[auto_1fr] gap-2">
-          <Button type="button" variant="outline" disabled={busy} onClick={() => onSubmit(false)}>
-            Preview
-          </Button>
-          <Button type="button" variant={tone} size="default" disabled={busy} onClick={() => onSubmit(true)}>
-            {busy ? phase || "Working…" : `Sign & ${side === "BUY" ? "buy" : "sell"} ${qty || "0"} ${spec.base}`}
-          </Button>
-        </div>
+        {wallet.session ? (
+          <div className="grid grid-cols-[auto_1fr] gap-2">
+            <Button type="button" variant="outline" disabled={busy} onClick={() => onSubmit(false)}>
+              Preview
+            </Button>
+            <Button type="button" variant={tone} size="default" disabled={busy} onClick={() => onSubmit(true)}>
+              {busy ? phase || "Working…" : `Sign & ${side === "BUY" ? "buy" : "sell"} ${qty || "0"} ${spec.base}`}
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3 rounded-sm border border-dashed border-line-strong px-3 py-4 text-center">
+            <p className="text-xs leading-5 text-muted">Choose a signer to place orders. The demo key needs no wallet and no funds.</p>
+            <ConnectButtons size="sm" />
+          </div>
+        )}
 
         {draft ? (
           <div className="animate-rise space-y-2">

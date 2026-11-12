@@ -9,9 +9,14 @@ const plexSans = IBM_Plex_Sans({ subsets: ["latin"], weight: ["400", "500", "600
 const plexMono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400", "500"], variable: "--font-plex-mono" });
 const instrument = Instrument_Serif({ subsets: ["latin"], weight: "400", style: ["normal", "italic"], variable: "--font-instrument" });
 
+const DESCRIPTION = "A public limit order book for BTC, ETH, SOL and NEAR that settles as signed NEAR Intents token_diff payloads. No custody.";
+
 export const metadata: Metadata = {
-  title: "IntentBook · public order book on NEAR Intents",
-  description: "A public limit order book for BTC, ETH, SOL and NEAR that settles as signed NEAR Intents token_diff payloads. No custody.",
+  metadataBase: new URL(process.env.SITE_URL || "https://intentbook.up.railway.app"),
+  title: { default: "IntentBook · public order book on NEAR Intents", template: "%s · IntentBook" },
+  description: DESCRIPTION,
+  openGraph: { type: "website", siteName: "IntentBook", title: "IntentBook · public order book on NEAR Intents", description: DESCRIPTION },
+  twitter: { card: "summary_large_image", title: "IntentBook · public order book on NEAR Intents", description: DESCRIPTION },
 };
 
 export const viewport: Viewport = {

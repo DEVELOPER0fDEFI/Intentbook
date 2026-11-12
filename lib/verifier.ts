@@ -1,6 +1,14 @@
 import { INTENTS_CONTRACT } from "./assets";
 import type { SignedIntent } from "./types";
 
+/** Every NEAR RPC failed. Surfaced to clients as a 503 they can retry. */
+export class RpcUnavailableError extends Error {
+  status = 503;
+  constructor(detail: string) {
+    super(`NEAR RPC did not answer (${detail}). Try again in a moment.`);
+  }
+}
+
 function rpcUrls(): string[] {
   const urls = [process.env.NEAR_RPC_URL, "https://rpc.fastnear.com", "https://rpc.mainnet.near.org"].filter(
     (value): value is string => Boolean(value),
@@ -37,13 +45,14 @@ export async function viewCall(method: string, args: unknown = {}): Promise<unkn
     },
   });
   let last = "NEAR RPC failed";
-  for (const rpc of rpcUrls()) {
+  // Two rounds over the RPC list: public RPCs drop the odd request, and one retry usually lands.
+  for (const rpc of [...rpcUrls(), ...rpcUrls()]) {
     try {
       const res = await fetch(rpc, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(12000),
       });
       const json = (await res.json()) as {
         error?: unknown;
@@ -59,7 +68,7 @@ export async function viewCall(method: string, args: unknown = {}): Promise<unkn
       last = error instanceof Error ? error.message : String(error);
     }
   }
-  throw new Error(last);
+  throw new RpcUnavailableError(last);
 }
 
 export async function protocolState(): Promise<{ feePips: number; salt: string; feeCollector: string }> {

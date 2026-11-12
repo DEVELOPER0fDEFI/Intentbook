@@ -4,6 +4,7 @@ import * as Tabs from "@radix-ui/react-tabs";
 import { Flame, Inbox, Receipt, Timer, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { ConnectPrompt } from "@/components/site/connect-prompt";
 import { useWallet } from "@/components/wallet";
 import { AssetMark } from "@/components/ui/asset-mark";
 import { Badge } from "@/components/ui/badge";
@@ -170,7 +171,7 @@ export function OrdersScreen() {
         }
         description="Cancel signs a cancel message and removes the order here. Nonce burn signs an empty intent with the order's nonce, which is how a nonce is spent on intents.near."
         action={
-          <Button variant="outline" disabled={busy !== null} onClick={() => void placeExpiring()}>
+          <Button variant="outline" disabled={busy !== null || !wallet.session} onClick={() => void placeExpiring()}>
             <Timer className="size-4" /> {busy === "rest" ? "Signing…" : "Rest a 20-second bid"}
           </Button>
         }
@@ -192,6 +193,13 @@ export function OrdersScreen() {
       ) : null}
       {notice ? <p className="rounded-sm border border-line bg-panel px-3 py-2 text-sm text-muted">{notice}</p> : null}
 
+      {!wallet.session ? (
+        wallet.ready ? (
+          <ConnectPrompt title="Choose a signer to see your orders" body="Orders belong to the key that signed them. Use the demo key to try the book, or connect your own wallet." />
+        ) : (
+          <Skeleton lines={4} />
+        )
+      ) : (
       <Tabs.Root defaultValue="orders">
         <Tabs.List className="flex gap-6 border-b border-line" aria-label="Orders and fills">
           {[
@@ -306,6 +314,7 @@ export function OrdersScreen() {
           )}
         </Tabs.Content>
       </Tabs.Root>
+      )}
     </div>
   );
 }

@@ -43,7 +43,7 @@ export function WalletDialog({ trigger }: { trigger: ReactNode }) {
 
   function connect(kind: WalletKind) {
     setPending(kind);
-    if (kind === "demo") wallet.useDemo();
+    if (kind === "demo") wallet.selectDemo();
     if (kind === "near") void wallet.connectNear();
     if (kind === "evm") void wallet.connectEvm();
     if (kind === "solana") void wallet.connectSolana();
@@ -100,7 +100,7 @@ export function WalletDialog({ trigger }: { trigger: ReactNode }) {
                 <KeyRound className="size-3.5" /> Register key on intents.near
               </Button>
             ) : null}
-            {session.kind !== "demo" ? (
+            {session ? (
               <Button size="sm" variant="ghost" disabled={wallet.busy} onClick={() => void wallet.disconnect()}>
                 <LogOut className="size-3.5" /> Disconnect
               </Button>

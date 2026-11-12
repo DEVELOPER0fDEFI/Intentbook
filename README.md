@@ -45,17 +45,18 @@ npm test
 npm run demo:dry
 ```
 
-The home page explains the idea, then opens the trading terminal. The demo key is the default signer, so judges need no wallet. **Connect** switches to a NEAR wallet (Meteor, HOT, MyNearWallet, HERE), MetaMask or Phantom.
+The home page explains the idea, then opens the trading terminal. Nothing is connected until you choose: **Use demo key** is one click and needs no wallet or funds, and **Connect** offers a NEAR wallet (Meteor, HOT, MyNearWallet, HERE), MetaMask or Phantom.
 
 ## Try it
 
-1. `npm run dev` and open the home page. See four markets with a reference mid from `GET https://1click.chaindefuser.com/v0/tokens` and a maker ladder around it. NEAR also shows a Rhea price from `https://smartx.rhea.finance/swapMultiDexPath`.
-2. In the order ticket, pick **Buy** and **Market**, keep one lot, and click **Preview**. See **What you sign**: the exact `token_diff` payload. Click **Sign & buy**. The demo key signs locally, the order takes the best ask, and a receipt appears with a **Signed · unfunded** stamp. Its raw result from `simulate_intents` says `insufficient balance or overflow`, because the signatures passed and only the balance check failed. A bad signature would say `invalid signature`. The taker fee is 8 bps and the maker fee is 0.
+1. `npm run dev` and open the home page. See four markets and a maker ladder around a reference mid. BTC, ETH and SOL use `GET https://1click.chaindefuser.com/v0/tokens`; NEAR follows the on-chain Rhea NEAR/USDC pool (`https://smartx.rhea.finance/swapMultiDexPath`). Prices are sampled every 10 seconds and the ladder re-quotes whenever the mid moves 1 bp, so the book, the chart and the mid arrow move with the market.
+2. In the order ticket, click **Use demo key**, pick **Buy** and **Market**, keep one lot, and click **Preview**. See **What you sign**: the exact `token_diff` payload. Click **Sign & buy**. The demo key signs locally, the order takes the best ask, and a receipt appears with a **Signed · unfunded** stamp. Its raw result from `simulate_intents` says `insufficient balance or overflow`, because the signatures passed and only the balance check failed. A bad signature would say `invalid signature`. The taker fee is 8 bps and the maker fee is 0.
 3. Type `sell 0.0001 btc at 200k` in the ticket's sentence box and press **Fill**. The ticket fills in a resting limit order. Tap any price in the book to use it as the limit.
 4. Open **Orders** and click **Rest a 20-second bid**. **Cancel** signs a cancel message and removes the order. **Burn nonce** signs an empty intent with the order's nonce and simulates it, which is how a nonce is spent on chain. Leave a bid alone for 20 seconds and see `EXPIRED`.
 5. Open **Funds**. See balances from `mt_batch_balance_of` (zero for a fresh demo key) and a dry `POST /v0/quote` from Base USDC into Intents USDC. **Track** polls `GET /v0/status` and flags `REFUNDED` and `FAILED`. A NEAR wallet can wrap and deposit NEAR, wNEAR or USDC, credited to any account. **Withdraw** signs an `ft_withdraw` and stops at simulation unless live mode is armed.
 6. Run `curl http://127.0.0.1:43123/api/v1/book?pair=BTC-USDC` and `curl http://127.0.0.1:43123/api/v1/trades?pair=BTC-USDC`. See the public book and the simulation results. Signatures are not returned on GET.
-7. Open **Build** to get the MCP command that lets an AI agent trade with its own key. See [AI agents (MCP)](#ai-agents-mcp).
+7. Open **Agents** to get the MCP command that lets an AI agent trade with its own key. See [AI agents (MCP)](#ai-agents-mcp).
+8. Open **Activity** to see every fill on the book with the raw result `intents.near` returned for it.
 
 One real mainnet trade for about $1 is described in [docs/live-test.md](docs/live-test.md).
 
@@ -193,7 +194,7 @@ Pairs: `BTC-USDC`, `ETH-USDC`, `SOL-USDC`, `NEAR-USDC`. Asset ids are loaded fro
 | `NEAR_RPC_URL` | No | Defaults to `https://rpc.fastnear.com`, then `https://rpc.mainnet.near.org`. |
 | `INTENTS_CONTRACT` | No | Defaults to `intents.near`. |
 | `ONECLICK_BASE` | No | Defaults to `https://1click.chaindefuser.com`. |
-| `MM_INTERVAL_MS` | No | Maker refresh. Default 45000. |
+| `MM_INTERVAL_MS` | No | Reference price sampling and maker refresh. Default 10000. |
 | `SQLITE_PATH` | No | Default `.data/intentbook.sqlite`. |
 
 ## Deploy to Railway
@@ -222,7 +223,7 @@ The directory is created if it is missing. Do not commit secrets.
 | `INTENTS_CONTRACT` | Optional. Default `intents.near`. |
 | `ONECLICK_BASE` | Optional. |
 | `REFERRER_SHARE_BPS` | Optional. Default 5000. |
-| `MM_INTERVAL_MS` | Optional. Default 45000. |
+| `MM_INTERVAL_MS` | Optional. Default 10000. |
 | `INTENTBOOK_NONCE` | Optional. `legacy` forces the old nonce. |
 | `INTENTBOOK_OPERATOR_SECRET` | Only if live mode is armed. Never commit it. |
 | `INTENTBOOK_MM_SECRET` | Only if live mode is armed. May equal the operator secret. |

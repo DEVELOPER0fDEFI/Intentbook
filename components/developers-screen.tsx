@@ -1,6 +1,7 @@
 "use client";
 
-import { Bot, Code2, Radio, ShieldCheck, SquareStack } from "lucide-react";
+import { Bot, Code2, Radio, SquareStack } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { CodeBlock } from "@/components/ui/copy-button";
 import { PageHeader } from "@/components/ui/page-header";
@@ -37,15 +38,6 @@ const WRITES: [string, string][] = [
   ["/api/v1/webhooks", "Signed HMAC fill webhook"],
   ["/api/v1/deposit-quote", "1Click quote, dry by default"],
   ["/api/v1/near-deposit", "Unsigned ft_transfer_call template"],
-];
-
-const TOOLS: [string, string][] = [
-  ["intentbook_status", "agent account, guardrails, dry-run or live"],
-  ["get_book · get_ticker", "depth, mid, spread, lot"],
-  ["best_price", "book vs 1Click vs Rhea for a size"],
-  ["place_order", "build, sign locally, submit"],
-  ["cancel_order", "signed cancel of the agent's order"],
-  ["my_orders · my_balances", "the agent's book state and funds"],
 ];
 
 function Feature({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
@@ -104,60 +96,21 @@ export function DevelopersScreen() {
         </Feature>
       </div>
 
-      <section id="agents" className="scroll-mt-24 grid gap-6 rounded-[var(--radius-panel)] border border-lime/30 bg-lime/[0.03] p-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:p-8">
-        <div>
-          <SectionLabel tone="lime">AI agents · MCP</SectionLabel>
-          <h2 className="font-display mt-2 text-4xl leading-[1.05] sm:text-5xl">
-            Give an agent a trading desk, <span className="italic">not your keys.</span>
-          </h2>
-          <p className="mt-4 text-sm leading-6 text-muted">
-            The IntentBook MCP server lets Claude, Codex or any MCP client read the book and trade on it. The agent gets its own NEAR Intents
-            account. Its key stays on the machine running the server: the API builds each order, the server signs it locally, and the API only sees
-            the signature.
-          </p>
-          <ul className="mt-5 space-y-2 text-sm">
-            <li className="flex gap-3">
-              <ShieldCheck className="mt-0.5 size-4 shrink-0 text-lime" />
-              <span>
-                <span className="nums text-xs text-ink">INTENTBOOK_AGENT_MAX_USDC</span> caps each order. Default 25.
-              </span>
-            </li>
-            <li className="flex gap-3">
-              <ShieldCheck className="mt-0.5 size-4 shrink-0 text-lime" />
-              <span>
-                <span className="nums text-xs text-ink">INTENTBOOK_AGENT_PAIRS</span> limits the markets it can touch.
-              </span>
-            </li>
-            <li className="flex gap-3">
-              <Bot className="mt-0.5 size-4 shrink-0 text-lime" />
-              <span>Every agent order is a token_diff the agent signed, checked by intents.near like anyone else&apos;s.</span>
-            </li>
-          </ul>
-        </div>
-        <div className="min-w-0 space-y-3">
-          <CodeBlock
-            label="Claude Code"
-            code={`claude mcp add intentbook \\
-  -e INTENTBOOK_URL=${origin} \\
-  -e INTENTBOOK_AGENT_MAX_USDC=5 \\
-  -- npx tsx /path/to/intentbook/mcp/stdio.ts`}
-          />
-          <div className="rounded-[var(--radius-panel)] border border-line bg-background/70 p-4">
-            <p className="eyebrow text-faint">Then ask</p>
-            <p className="font-display mt-2 text-2xl leading-snug">
-              &ldquo;What is the NEAR spread on IntentBook? Rest a 2 NEAR bid at 1 USDC, then cancel it.&rdquo;
-            </p>
-          </div>
-          <ul className="grid gap-px overflow-hidden rounded-[var(--radius-panel)] border border-line bg-line sm:grid-cols-2">
-            {TOOLS.map(([name, what]) => (
-              <li key={name} className="bg-panel px-3 py-2.5">
-                <p className="nums text-xs text-lime">{name}</p>
-                <p className="mt-0.5 text-[0.6875rem] text-muted">{what}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
+      <Link
+        href="/agents"
+        className="group flex flex-col gap-3 rounded-[var(--radius-panel)] border border-lime/30 bg-lime/[0.04] p-5 transition-colors hover:border-lime/60 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <span className="flex items-center gap-4">
+          <span className="grid size-10 shrink-0 place-items-center rounded-full border border-lime/40 text-lime">
+            <Bot className="size-4" />
+          </span>
+          <span>
+            <span className="font-display block text-2xl leading-none">AI agents trade here too</span>
+            <span className="mt-1 block text-sm text-muted">An MCP server gives Claude, Codex or any MCP client its own key and a spending cap.</span>
+          </span>
+        </span>
+        <span className="eyebrow text-lime">Set up an agent →</span>
+      </Link>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="min-w-0 space-y-3">

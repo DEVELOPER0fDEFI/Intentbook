@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Book, Level } from "@/components/trade/types";
 import { Skeleton } from "@/components/ui/states";
 import { cn } from "@/lib/cn";
@@ -34,6 +34,13 @@ export function BookLadder({ book, base, onPick, className }: { book: Book | nul
   const asks = useMemo(() => [...(book?.asks ?? [])].reverse(), [book]);
   const max = useMemo(() => Math.max(1, ...[...(book?.bids ?? []), ...(book?.asks ?? [])].map((level) => toNumber(level.total))), [book]);
   const mid = book?.mid ? toNumber(book.mid) : 0;
+  // Direction of the last change in the reference mid, for the tick arrow and flash.
+  const pair = book?.pair ?? "";
+  const [tick, setTick] = useState<{ pair: string; mid: number; dir: "up" | "down" | null }>({ pair: "", mid: 0, dir: null });
+  if (mid && (mid !== tick.mid || pair !== tick.pair)) {
+    // A new market starts without a direction; only moves within one market count.
+    setTick({ pair, mid, dir: tick.mid && pair === tick.pair ? (mid > tick.mid ? "up" : "down") : null });
+  }
   const spreadBps = book?.spread && mid ? (toNumber(book.spread) / mid) * 10_000 : null;
 
   return (
@@ -61,8 +68,21 @@ export function BookLadder({ book, base, onPick, className }: { book: Book | nul
               <Row key={`a-${level.price}-${level.qty}`} level={level} tone="ask" max={max} onPick={onPick} />
             ))}
           </div>
-          <div className="my-1 flex items-center justify-between gap-2 border-y border-line bg-background/60 px-3 py-2.5">
-            <span className="font-display text-2xl leading-none">{book.mid ? `$${book.mid}` : "–"}</span>
+          <div
+            key={book.mid ?? "mid"}
+            className={cn(
+              "my-1 flex items-center justify-between gap-2 border-y border-line bg-background/60 px-3 py-2.5",
+              tick.dir === "up" ? "animate-flash-bid" : tick.dir === "down" ? "animate-flash-ask" : "",
+            )}
+          >
+            <span className="font-display flex items-baseline gap-2 text-2xl leading-none">
+              {book.mid ? `${book.mid}` : "–"}
+              {tick.dir ? (
+                <span aria-label={tick.dir === "up" ? "up" : "down"} className={cn("nums text-sm", tick.dir === "up" ? "text-bid" : "text-ask")}>
+                  {tick.dir === "up" ? "▲" : "▼"}
+                </span>
+              ) : null}
+            </span>
             <span className="nums text-right text-[0.625rem] uppercase tracking-[0.12em] text-muted">
               spread {book.spread ?? "–"}
               {spreadBps !== null ? <span className="block text-lime">{spreadBps.toFixed(1)} bps</span> : null}

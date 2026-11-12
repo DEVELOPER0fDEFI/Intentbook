@@ -2,6 +2,7 @@
 
 import * as Tabs from "@radix-ui/react-tabs";
 import { FormEvent, useEffect, useState, type ReactNode } from "react";
+import { ConnectPrompt } from "@/components/site/connect-prompt";
 import { useWallet } from "@/components/wallet";
 import { AssetMark, symbolOf } from "@/components/ui/asset-mark";
 import { Badge } from "@/components/ui/badge";
@@ -144,7 +145,15 @@ export function FundsScreen() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <Panel label="Balances inside intents.near" action={<span className="nums text-[0.625rem] text-faint">mt_batch_balance_of</span>}>
           {balanceError ? <p className="text-sm text-ask">{balanceError}</p> : null}
-          {balances === null && !balanceError ? <Skeleton lines={5} /> : null}
+          {!account ? (
+            wallet.ready ? (
+              <ConnectPrompt title="Choose a signer to see balances" body="Balances are read from that signer's account inside intents.near." />
+            ) : (
+              <Skeleton lines={5} />
+            )
+          ) : balances === null && !balanceError ? (
+            <Skeleton lines={5} />
+          ) : null}
           <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
             {(balances ?? []).map((row) => {
               const symbol = symbolOf(row.tokenId);

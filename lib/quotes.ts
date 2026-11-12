@@ -8,7 +8,7 @@ import {
   USDC_CONTRACT,
   USDC_DECIMALS,
 } from "./assets";
-import { formatAtoms, parseAtoms } from "./format";
+import { formatAtoms, formatPrice, parseAtoms } from "./format";
 import type { PairId, Side } from "./types";
 
 export interface TokenRow {
@@ -37,7 +37,7 @@ function oneclickHeaders(): Record<string, string> {
 }
 
 export async function getTokens(force = false): Promise<TokenRow[]> {
-  if (!force && tokenCache && Date.now() - tokenCache.at < 20_000) return tokenCache.rows;
+  if (!force && tokenCache && Date.now() - tokenCache.at < 8_000) return tokenCache.rows;
   const res = await fetch(`${oneclickBase()}/v0/tokens`, { headers: oneclickHeaders(), signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`1Click tokens failed (${res.status})`);
   const rows = (await res.json()) as TokenRow[];
@@ -91,13 +91,16 @@ export async function referencePrices(): Promise<ReferencePrice[]> {
     const row = byId.get(spec.baseAsset);
     if (!row?.price || row.price <= 0) continue;
     const usd = row.price / usdcPrice;
-    const midAtoms = BigInt(Math.round(usd * 10 ** USDC_DECIMALS));
+    // NEAR follows the on-chain Rhea NEAR/USDC pool: it moves with every trade there, while
+    // 1Click prices refresh about once a minute and only to two decimals. Others use 1Click.
+    const fromRhea = spec.id === "NEAR-USDC" && rhea !== null && rhea.atoms > 0n;
+    const midAtoms = fromRhea ? rhea!.atoms : BigInt(Math.round(usd * 10 ** USDC_DECIMALS));
     if (midAtoms <= 0n) continue;
     out.push({
       pair: spec.id,
       midAtoms,
-      mid: formatAtoms(midAtoms, USDC_DECIMALS, 2),
-      source: "1click:/v0/tokens",
+      mid: formatPrice(midAtoms),
+      source: fromRhea ? "rhea:NEAR/USDC pool" : "1click:/v0/tokens",
       updatedAt: row.priceUpdatedAt,
       rheaMid: spec.id === "NEAR-USDC" ? rhea?.human : undefined,
     });

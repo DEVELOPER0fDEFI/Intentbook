@@ -2,7 +2,7 @@
   var script = document.currentScript;
   if (!script || !script.parentNode) return;
   var referrer = script.getAttribute("data-referrer") || "";
-  var origin = script.getAttribute("data-origin") || "http://127.0.0.1:43123";
+  var origin = script.getAttribute("data-origin") || new URL(script.src, window.location.href).origin;
   var frame = document.createElement("iframe");
   frame.title = "IntentBook";
   frame.src = origin.replace(/\/$/, "") + "/embed?referrer=" + encodeURIComponent(referrer);

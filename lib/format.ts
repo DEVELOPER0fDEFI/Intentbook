@@ -17,6 +17,11 @@ export function formatFee(atoms: bigint): string {
   return formatAtoms(atoms, USDC_DECIMALS, 6);
 }
 
+/** Prices under $100 keep four decimals, so ladder levels a few bps apart stay distinct (NEAR trades near $3). */
+export function formatPrice(atoms: bigint): string {
+  return formatAtoms(atoms, USDC_DECIMALS, atoms < 100_000_000n ? 4 : 2);
+}
+
 export function formatUsd(atoms: bigint): string {
   return formatAtoms(atoms, USDC_DECIMALS, 2);
 }

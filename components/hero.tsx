@@ -41,7 +41,7 @@ export function Hero() {
             </a>
           </Button>
           <Button asChild size="lg" variant="outline">
-            <Link href="/developers#agents">
+            <Link href="/agents">
               Let an AI agent trade <ArrowUpRight className="size-4" />
             </Link>
           </Button>
