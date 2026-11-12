@@ -82,6 +82,30 @@ Embed with:
 
 The referrer id is stored with each fill and earns `REFERRER_SHARE_BPS` of the taker fee. `GET /api/v1/referrers?id=your-app` returns the total.
 
+## AI agents (MCP)
+
+`mcp/stdio.ts` is an MCP server, so an AI agent (Claude Code, Claude Desktop, Codex or any MCP client) can trade on the book with its own key.
+
+| Tool | What it does |
+| --- | --- |
+| `intentbook_status` | The agent's NEAR Intents account, its guardrails, dry-run or live |
+| `get_book`, `get_ticker` | Depth, mid, spread and lot size |
+| `best_price` | Book versus 1Click versus Rhea for a size |
+| `place_order` | Build, sign locally, submit. Crossing size matches; leftover rests |
+| `cancel_order` | Signed cancel of one of the agent's orders |
+| `my_orders`, `my_balances` | The agent's orders and intents.near balances |
+
+- The key is created on first run at `~/.intentbook/agent-key.json`, or read from `INTENTBOOK_AGENT_SECRET`. Its implicit account is the agent's NEAR Intents account. The API builds each order, the MCP server signs it as NEP-413, and the key never leaves the machine.
+- The human sets the guardrails: `INTENTBOOK_AGENT_MAX_USDC` (per order, default 25) and `INTENTBOOK_AGENT_PAIRS` (allowlist, for example `NEAR-USDC`). `INTENTBOOK_URL` picks the book (default the hosted one).
+
+Add it to Claude Code:
+
+```bash
+claude mcp add intentbook -e INTENTBOOK_URL=https://intentbook.up.railway.app -e INTENTBOOK_AGENT_MAX_USDC=5 -- npx tsx /path/to/intentbook/mcp/stdio.ts
+```
+
+Try it: ask "What is the NEAR spread on IntentBook? Rest a 2 NEAR bid at 1 USDC, then cancel it." See the order appear for the agent's account on the Orders API and then show `CANCELLED`. `INTENTBOOK_URL=http://127.0.0.1:43123 npx tsx scripts/mcp-smoke.ts` runs the same steps as a script.
+
 ## Wallets
 
 - **Demo key**: an ed25519 key in `localStorage`. This is the fallback for judges. It is not funded.

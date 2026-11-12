@@ -12,9 +12,11 @@
     "start": "tsx server.ts",
     "lint": "eslint",
     "test": "node --import tsx --test test/*.test.ts",
-    "demo:dry": "tsx scripts/demo-dry.ts"
+    "demo:dry": "tsx scripts/demo-dry.ts",
+    "mcp": "tsx mcp/stdio.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@near-wallet-selector/core": "^8.10.2",
     "@near-wallet-selector/here-wallet": "^8.10.2",
     "@near-wallet-selector/hot-wallet": "^8.10.2",
@@ -31,12 +33,13 @@
     "clsx": "^2.1.1",
     "lucide-react": "^1.72.0",
     "near-api-js": "^5.1.1",
-    "tsx": "^4.23.15",
     "next": "15.5.29",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "tailwind-merge": "^3.7.0",
-    "ws": "^8.22.2"
+    "tsx": "^4.23.15",
+    "ws": "^8.22.2",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
