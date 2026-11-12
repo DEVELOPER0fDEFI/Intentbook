@@ -316,6 +316,7 @@ function levels(pair: PairId, side: Side) {
 }
 
 const backstopFailed = new Set<string>();
+const MM_LEVELS = 6;
 let mmSequence = 0;
 
 function rememberMids(prices: ReferencePrice[]) {
@@ -392,10 +393,11 @@ async function seedUnlocked() {
       !previous || previous === 0n
         ? true
         : (price.midAtoms > previous ? price.midAtoms - previous : previous - price.midAtoms) * 10000n / previous >= 5n;
-    const openMm = state.orders.some((order) => order.role === "mm" && order.pair === price.pair && order.status === "OPEN");
-    if (openMm && !drifted) continue;
+    // Re-quote when the price drifts or when any maker level was filled, so the ladder stays complete.
+    const openMm = state.orders.filter((order) => order.role === "mm" && order.pair === price.pair && order.status === "OPEN").length;
+    if (openMm >= MM_LEVELS * 2 && !drifted) continue;
     cancelMm(price.pair);
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < MM_LEVELS; i++) {
       const bps = 8n + BigInt(i) * 6n;
       const ask = (price.midAtoms * (10000n + bps)) / 10000n;
       const bid = (price.midAtoms * (10000n - bps)) / 10000n;
@@ -515,10 +517,10 @@ async function settleUnlocked(input: {
   const simulate = await simulateIntents(batch);
   const verdict = interpretSimulation(simulate);
   const spec = PAIRS[input.pair];
-  const baseDelta = takerDiff[spec.baseAsset] ?? 0n;
-  const quoteDelta = takerDiff[USDC_ASSET] ?? 0n;
-  const baseQty = baseDelta < 0n ? -baseDelta : baseDelta;
-  const quoteQty = quoteDelta < 0n ? -quoteDelta : quoteDelta;
+  // Report the trade at the makers' prices. The taker fee is its own field, not folded into the price.
+  const abs = (value: bigint) => (value < 0n ? -value : value);
+  const baseQty = makerDiffs.reduce((sum, diff) => sum + abs(diff[spec.baseAsset] ?? 0n), 0n);
+  const quoteQty = makerDiffs.reduce((sum, diff) => sum + abs(diff[USDC_ASSET] ?? 0n), 0n);
   const priceAtoms = priceAtomsFromFill(baseQty, quoteQty, spec.baseDecimals);
   const fill: Fill = {
     id: crypto.randomUUID(),
@@ -602,6 +604,16 @@ async function settleUnlocked(input: {
   persist();
   const trade = publicFill(fill);
   emit("fill", { pair: input.pair, trade });
+  // Refill the maker ladder after this commit releases the lock.
+  if (input.makerOrders.some((order) => order.role === "mm")) {
+    void lock(async () => {
+      try {
+        await seedUnlocked();
+      } catch {
+        // The interval retries.
+      }
+    });
+  }
   void import("./webhooks")
     .then((mod) => mod.fanoutFill(trade))
     .catch(() => undefined);

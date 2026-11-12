@@ -1,28 +1,50 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import * as Tabs from "@radix-ui/react-tabs";
+import { FormEvent, useEffect, useState, type ReactNode } from "react";
 import { useWallet } from "@/components/wallet";
-import { statusTone } from "@/lib/chain";
-import { nearblocksAccount, shortAccount } from "@/lib/format";
+import { AssetMark, symbolOf } from "@/components/ui/asset-mark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Field, Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
+import { Panel, SectionLabel } from "@/components/ui/panel";
+import { Skeleton } from "@/components/ui/states";
+import { USDC_CONTRACT } from "@/lib/assets";
+import { statusTone } from "@/lib/chain";
+import { formatAtoms, nearblocksAccount, parseAtoms, shortAccount } from "@/lib/format";
+import { cn } from "@/lib/cn";
 
-const STEPS = [
-  "Origin wallet",
-  "1Click deposit quote",
-  "Intents balance",
-  "Signed order",
-  "Match simulation",
-  "Withdraw",
-];
-
+const STEPS = ["Origin wallet", "Deposit quote", "Intents balance", "Signed order", "Match simulation", "Withdraw"];
 const STATUSES = ["PENDING_DEPOSIT", "KNOWN_DEPOSIT_TX", "PROCESSING", "SUCCESS", "INCOMPLETE_DEPOSIT", "REFUNDED", "FAILED"];
+const DECIMALS: Record<string, number> = { USDC: 6, BTC: 8, ETH: 18, SOL: 9, NEAR: 24 };
+/** wrap.near storage minimum for a new holder: 0.00125 NEAR. */
+const WRAP_STORAGE_YOCTO = 1_250_000_000_000_000_000_000n;
+
+const tabClass =
+  "relative -mb-px min-h-11 text-sm text-muted data-[state=active]:text-ink data-[state=active]:after:absolute data-[state=active]:after:inset-x-0 data-[state=active]:after:bottom-0 data-[state=active]:after:h-0.5 data-[state=active]:after:bg-lime";
+
+function Raw({ value, label = "Raw response" }: { value: unknown; label?: string }) {
+  if (!value) return null;
+  return (
+    <details className="group mt-3 rounded-sm border border-line">
+      <summary className="nums flex min-h-9 cursor-pointer list-none items-center px-3 text-[0.6875rem] text-muted hover:text-ink">
+        <span className="mr-2 inline-block transition-transform group-open:rotate-90">›</span>
+        {label}
+      </summary>
+      <pre className="nums max-h-56 overflow-auto px-3 pb-3 text-[0.6875rem] leading-5">{JSON.stringify(value, null, 2)}</pre>
+    </details>
+  );
+}
+
+function Explain({ children }: { children: ReactNode }) {
+  return <p className="text-xs leading-5 text-muted">{children}</p>;
+}
 
 export function FundsScreen() {
   const wallet = useWallet();
   const account = wallet.session?.accountId ?? "";
-  const [balances, setBalances] = useState<{ tokenId: string; amount: string }[]>([]);
+  const [balances, setBalances] = useState<{ tokenId: string; amount: string }[] | null>(null);
   const [amount, setAmount] = useState("20");
   const [refundTo, setRefundTo] = useState("0x0000000000000000000000000000000000000001");
   const [quote, setQuote] = useState<unknown>(null);
@@ -33,6 +55,7 @@ export function FundsScreen() {
 
   useEffect(() => {
     if (!account) return;
+    setBalances(null);
     fetch(`/api/v1/balances?account=${account}`)
       .then(async (res) => {
         const data = await res.json();
@@ -57,14 +80,13 @@ export function FundsScreen() {
     };
   }, [depositAddress]);
 
-  async function onQuote(event: FormEvent) {
-    event.preventDefault();
+  async function requestQuote(dry: boolean) {
     setQuoteError("");
     setQuote(null);
     const res = await fetch("/api/v1/deposit-quote", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ amount, account, refundTo }),
+      body: JSON.stringify({ amount, account, refundTo, dry }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -72,6 +94,8 @@ export function FundsScreen() {
       return;
     }
     setQuote(data.quote);
+    const address = data.quote?.quote?.depositAddress;
+    if (!dry && typeof address === "string") setDepositAddress(address);
   }
 
   async function onStatus(event: FormEvent) {
@@ -82,180 +106,249 @@ export function FundsScreen() {
 
   const quoteBody = quote as { quote?: { amountOutFormatted?: string; timeEstimate?: number } } | null;
   const statusValue =
-    status && typeof status === "object" && "result" in status
-      ? (status as { result?: { status?: string } }).result?.status
-      : undefined;
+    status && typeof status === "object" && "result" in status ? (status as { result?: { status?: string } }).result?.status : undefined;
+  const funded = (balances ?? []).some((row) => row.amount !== "0");
+  const reached = [true, Boolean(quote), funded, false, false, false];
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-      <section className="space-y-4">
-        <div>
-          <h1 className="font-display text-4xl">Where the funds sit</h1>
-          <p className="mt-2 max-w-xl text-sm text-muted">
-            Dry-run never asks you to send tokens. The balance query and the deposit quote are live reads. A non-dry quote, which would
-            return a deposit address, is not requested.
-          </p>
-        </div>
-        <ol className="space-y-2">
-          {STEPS.map((step, index) => (
-            <li key={step} className="flex items-center gap-3 rounded-lg border border-line bg-panel px-4 py-3">
-              <span className="nums w-6 text-sm text-lime">{index + 1}</span>
-              <div>
-                <p className="text-sm">{step}</p>
-                <p className="text-xs text-muted">{stepCopy(index, Boolean(quote), balances.length > 0)}</p>
-              </div>
-            </li>
-          ))}
-        </ol>
-        <div className="rounded-lg border border-line bg-panel p-4">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm">Intents balances</h2>
-            {account ? (
-              <a className="text-xs text-lime" href={nearblocksAccount(account)}>
-                {shortAccount(account)} on NearBlocks
+    <div className="space-y-8">
+      <PageHeader
+        eyebrow="Funds"
+        title={
+          <>
+            Your money stays <span className="italic text-lime">yours.</span>
+          </>
+        }
+        description="Balances live in your own account inside intents.near. IntentBook only reads them. Deposits and withdrawals are signed by your wallet, and dry-run never asks you to send tokens."
+        action={
+          account ? (
+            <Button asChild variant="outline" size="sm">
+              <a href={nearblocksAccount(account)} target="_blank" rel="noreferrer">
+                {shortAccount(account)} on NearBlocks ↗︎
               </a>
-            ) : null}
-          </div>
-          {balanceError ? <p className="mt-3 text-sm text-ask">{balanceError}</p> : null}
-          {balances.length === 0 ? <p className="mt-3 text-sm text-muted">Querying intents.near.</p> : null}
-          <ul className="mt-3 space-y-2">
-            {balances.map((row) => (
-              <li key={row.tokenId} className="flex items-center justify-between gap-3 text-sm">
-                <span className="truncate text-muted">{row.tokenId.replace("nep141:", "")}</span>
-                <span className="nums">{row.amount}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-3 text-xs text-muted">A new demo key is unfunded, so these amounts are zero. That is the expected dry-run state.</p>
-        </div>
-      </section>
-      <section className="space-y-4">
-        <form onSubmit={onQuote} className="rounded-lg border border-line bg-panel p-4">
-          <h2 className="text-sm">Quote a Base USDC deposit</h2>
-          <p className="mt-1 text-xs text-muted">POST /v0/quote with dry: true, origin Base USDC, destination canonical USDC, recipientType INTENTS.</p>
-          <label className="mt-3 block text-xs text-muted" htmlFor="amount">
-            USDC amount
-          </label>
-          <Input id="amount" className="mt-1" value={amount} onChange={(event) => setAmount(event.target.value)} />
-          <label className="mt-3 block text-xs text-muted" htmlFor="refund">
-            Refund address (EVM)
-          </label>
-          <Input id="refund" className="mt-1 nums" value={refundTo} onChange={(event) => setRefundTo(event.target.value)} />
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button type="submit">Get dry quote</Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={async () => {
-                setQuoteError("");
-                setQuote(null);
-                const res = await fetch("/api/v1/deposit-quote", {
-                  method: "POST",
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify({ amount, account, refundTo, dry: false }),
-                });
-                const data = await res.json();
-                if (!res.ok) {
-                  setQuoteError(data.error || "Quote failed");
-                  return;
-                }
-                setQuote(data.quote);
-                const address = data.quote?.quote?.depositAddress;
-                if (typeof address === "string") setDepositAddress(address);
-              }}
-            >
-              Create deposit address
             </Button>
-          </div>
-          {quoteError ? <p className="mt-3 text-sm text-ask">{quoteError}</p> : null}
-          {quoteBody?.quote ? (
-            <p className="mt-3 text-sm">
-              You would receive about {quoteBody.quote.amountOutFormatted} USDC inside Intents
-              {quoteBody.quote.timeEstimate ? `, estimate ${quoteBody.quote.timeEstimate}s` : ""}. Not executed.
-            </p>
+          ) : null
+        }
+      />
+
+      <ol className="grid grid-cols-2 gap-px overflow-hidden rounded-[var(--radius-panel)] border border-line bg-line sm:grid-cols-3 lg:grid-cols-6">
+        {STEPS.map((step, index) => (
+          <li key={step} className={cn("bg-panel px-4 py-3", reached[index] ? "" : "opacity-70")}>
+            <p className={cn("nums text-[0.6875rem]", reached[index] ? "text-lime" : "text-faint")}>{String(index + 1).padStart(2, "0")}</p>
+            <p className="mt-1 text-sm">{step}</p>
+            <p className="mt-1 text-[0.6875rem] leading-4 text-muted">{stepCopy(index, Boolean(quote), funded)}</p>
+          </li>
+        ))}
+      </ol>
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <Panel label="Balances inside intents.near" action={<span className="nums text-[0.625rem] text-faint">mt_batch_balance_of</span>}>
+          {balanceError ? <p className="text-sm text-ask">{balanceError}</p> : null}
+          {balances === null && !balanceError ? <Skeleton lines={5} /> : null}
+          <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+            {(balances ?? []).map((row) => {
+              const symbol = symbolOf(row.tokenId);
+              const human = formatAtoms(BigInt(row.amount || "0"), DECIMALS[symbol] ?? 0, 8);
+              return (
+                <li key={row.tokenId} className="flex items-center gap-3 rounded-sm border border-line bg-background/50 px-3 py-2.5">
+                  <AssetMark symbol={symbol} />
+                  <span className="flex-1 text-sm">{symbol}</span>
+                  <span className={cn("nums text-sm", row.amount === "0" ? "text-faint" : "text-ink")}>{human}</span>
+                </li>
+              );
+            })}
+          </ul>
+          {balances && !funded ? (
+            <p className="mt-3 text-xs leading-5 text-muted">This signer has no balance yet. That is expected in dry-run: fills simulate and stop at the balance check.</p>
           ) : null}
-          {quote ? (
-            <pre className="nums mt-3 max-h-48 overflow-auto text-xs">{JSON.stringify(quote, null, 2)}</pre>
-          ) : null}
-        </form>
-        <form onSubmit={onStatus} className="rounded-lg border border-line bg-panel p-4">
-          <h2 className="text-sm">Look up a 1Click deposit</h2>
-          <p className="mt-1 text-xs text-muted">GET /v0/status. Paste a deposit address if you have one. Unknown addresses return the API error.</p>
-          <Input className="mt-3" value={depositAddress} onChange={(event) => setDepositAddress(event.target.value)} placeholder="deposit address" />
-          <Button className="mt-3" type="submit" variant="outline">
-            Check status
-          </Button>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {STATUSES.map((item) => (
-              <Badge key={item} value={item} />
-            ))}
-          </div>
-          {statusValue ? (
-            <div className="mt-3">
-              <Badge value={statusValue} />
-            </div>
-          ) : null}
-          {status ? <pre className="nums mt-3 max-h-48 overflow-auto text-xs">{JSON.stringify(status, null, 2)}</pre> : null}
-          {statusTone(statusValue) === "bad" ? (
-            <p className="mt-3 text-sm text-ask">
-              This deposit is {statusValue}. Funds were not credited. Check the refund address and the 1Click status before sending more.
-            </p>
-          ) : null}
-          {statusTone(statusValue) === "wait" ? (
-            <p className="mt-3 text-sm text-muted">Status is {statusValue}. This page polls every 8 seconds. Nothing has been executed by the server.</p>
-          ) : null}
-        </form>
-        <form
-          className="rounded-lg border border-line bg-panel p-4"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            setQuoteError("");
-            const res = await fetch("/api/v1/near-deposit", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ tokenContract: "wrap.near", amount: "1000000000000000000000000", owner: account }),
-            });
-            const data = await res.json();
-            if (!res.ok) {
-              setQuoteError(data.error || "Could not build the deposit");
-              return;
-            }
-            if (wallet.session?.kind !== "near") {
-              setQuote(data);
-              return;
-            }
-            try {
-              const hash = await wallet.nearDeposit(data);
-              setQuote({ ...data, txHash: hash, explorer: hash ? `https://nearblocks.io/txns/${hash}` : null });
-            } catch (err) {
-              setQuoteError(err instanceof Error ? err.message : "The wallet did not send the deposit");
-            }
-          }}
-        >
-          <h2 className="text-sm">Deposit wNEAR into intents.near</h2>
-          <p className="mt-1 text-xs text-muted">
-            ft_transfer_call on wrap.near. Your NEAR wallet signs it. The server never sends this transaction. Native NEAR is not accepted.
-          </p>
-          <Button className="mt-3" type="submit" variant="outline">
-            {wallet.session?.kind === "near" ? "Deposit 1 wNEAR" : "Show the deposit call"}
-          </Button>
-        </form>
-        <WithdrawForm account={account} />
-      </section>
+        </Panel>
+
+        <Panel bodyClassName="pt-0">
+          <Tabs.Root defaultValue="deposit">
+            <Tabs.List className="flex gap-6 border-b border-line" aria-label="Move funds">
+              <Tabs.Trigger value="deposit" className={tabClass}>
+                Deposit
+              </Tabs.Trigger>
+              <Tabs.Trigger value="track" className={tabClass}>
+                Track
+              </Tabs.Trigger>
+              <Tabs.Trigger value="withdraw" className={tabClass}>
+                Withdraw
+              </Tabs.Trigger>
+            </Tabs.List>
+
+            <Tabs.Content value="deposit" className="space-y-6 pt-4">
+              <NearDeposit account={account} />
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void requestQuote(true);
+                }}
+                className="space-y-3 border-t border-line pt-5"
+              >
+                <SectionLabel>From Base · USDC via 1Click</SectionLabel>
+                <Explain>A dry quote from Base USDC into canonical USDC in your Intents account. No deposit address is created.</Explain>
+                <div className="grid gap-3 sm:grid-cols-[0.6fr_1.4fr]">
+                  <Field label="USDC" htmlFor="amount">
+                    <Input id="amount" className="nums" value={amount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} />
+                  </Field>
+                  <Field label="Refund address on Base" htmlFor="refund">
+                    <Input id="refund" className="nums" value={refundTo} onChange={(event) => setRefundTo(event.target.value)} />
+                  </Field>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="submit" variant="cream">
+                    Get dry quote
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => void requestQuote(false)}>
+                    Create deposit address
+                  </Button>
+                </div>
+                {quoteError ? <p className="text-sm text-ask">{quoteError}</p> : null}
+                {quoteBody?.quote ? (
+                  <p className="rounded-sm border border-lime/30 bg-lime/[0.05] px-3 py-2 text-sm">
+                    You would receive about <span className="nums">{quoteBody.quote.amountOutFormatted}</span> USDC inside Intents
+                    {quoteBody.quote.timeEstimate ? ` in about ${quoteBody.quote.timeEstimate}s` : ""}. Nothing was executed.
+                  </p>
+                ) : null}
+                <Raw value={quote} />
+              </form>
+            </Tabs.Content>
+
+            <Tabs.Content value="track" className="pt-4">
+              <form onSubmit={onStatus} className="space-y-3">
+                <SectionLabel>1Click deposit status</SectionLabel>
+                <Explain>Paste a deposit address. The page polls GET /v0/status every 8 seconds and flags refunds and failures.</Explain>
+                <div className="flex gap-2">
+                  <Input value={depositAddress} onChange={(event) => setDepositAddress(event.target.value)} placeholder="deposit address" className="nums" />
+                  <Button type="submit" variant="outline">
+                    Check
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {STATUSES.map((item) => (
+                    <span key={item} className={cn(statusValue && statusValue !== item ? "opacity-40" : "")}>
+                      <Badge value={item} />
+                    </span>
+                  ))}
+                </div>
+                {statusTone(statusValue) === "bad" ? (
+                  <p className="text-sm text-ask">This deposit is {statusValue}. Funds were not credited. Check the refund address before sending more.</p>
+                ) : null}
+                {statusTone(statusValue) === "wait" ? <p className="text-sm text-muted">Status is {statusValue}. Still polling.</p> : null}
+                <Raw value={status} />
+              </form>
+            </Tabs.Content>
+
+            <Tabs.Content value="withdraw" className="pt-4">
+              <WithdrawForm account={account} />
+            </Tabs.Content>
+          </Tabs.Root>
+        </Panel>
+      </div>
     </div>
   );
 }
 
-function stepCopy(index: number, quoted: boolean, balances: boolean) {
+function stepCopy(index: number, quoted: boolean, funded: boolean) {
   const lines = [
-    "Your own wallet. This demo key has not been funded.",
-    quoted ? "A dry quote is on the right. No deposit address was created." : "Request a dry quote when you want a price.",
-    balances ? "Live mt_batch_balance_of for this key." : "Balance query has not returned yet.",
-    "A signed limit order leaves the balance spendable.",
-    "A match is simulated. Unfunded keys stop at insufficient balance.",
-    "Withdraw signs ft_withdraw or a 1Click quote. Dry-run does not broadcast it.",
+    "Any chain NEAR Intents supports.",
+    quoted ? "Dry quote received." : "Ask for a dry quote below.",
+    funded ? "Funded." : "Empty until you deposit.",
+    "Signing does not lock funds.",
+    "simulate_intents on mainnet.",
+    "Back to your own address.",
   ];
   return lines[index];
+}
+
+/**
+ * Deposit into intents.near from the connected NEAR wallet, credited to any account.
+ * "NEAR" wraps native NEAR (near_deposit) and deposits it in the same transaction.
+ */
+function NearDeposit({ account }: { account: string }) {
+  const wallet = useWallet();
+  const [token, setToken] = useState<"NEAR" | "wNEAR" | "USDC">("NEAR");
+  const [amount, setAmount] = useState("0.1");
+  const [creditTo, setCreditTo] = useState("");
+  const [result, setResult] = useState<unknown>(null);
+  const [error, setError] = useState("");
+  const isNear = wallet.session?.kind === "near";
+
+  async function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setResult(null);
+    const decimals = token === "USDC" ? 6 : 24;
+    const atoms = parseAtoms(amount, decimals);
+    if (!atoms || atoms <= 0n) {
+      setError("Enter a positive amount");
+      return;
+    }
+    const res = await fetch("/api/v1/near-deposit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tokenContract: token === "USDC" ? USDC_CONTRACT : "wrap.near",
+        amount: atoms.toString(),
+        owner: creditTo.trim() || account,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setError(data.error || "Could not build the deposit");
+      return;
+    }
+    // wrap.near registers a new holder out of the attached NEAR, so attach the storage minimum on top.
+    const wrap = { methodName: "near_deposit", args: {}, gas: "10000000000000", deposit: (atoms + WRAP_STORAGE_YOCTO).toString() };
+    const calls = token === "NEAR" ? [wrap, data] : [data];
+    if (!isNear) {
+      setResult({ receiverId: data.receiverId, calls });
+      return;
+    }
+    try {
+      const hash = await wallet.nearCalls(data.receiverId, calls);
+      setResult({ receiverId: data.receiverId, calls, txHash: hash, explorer: hash ? `https://nearblocks.io/txns/${hash}` : null });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The wallet did not send the deposit");
+    }
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-3">
+      <SectionLabel>From a NEAR wallet · ft_transfer_call</SectionLabel>
+      <Explain>
+        Your NEAR wallet sends the token to intents.near and the balance is credited to the account below. Choosing NEAR wraps it into wNEAR in the
+        same transaction. The server never sends this.
+      </Explain>
+      <div className="grid grid-cols-3 rounded-sm border border-line-strong p-1">
+        {(["NEAR", "wNEAR", "USDC"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setToken(value)}
+            className={cn("h-9 rounded-[2px] text-sm", token === value ? "bg-ink text-background" : "text-muted hover:text-ink")}
+          >
+            {value}
+          </button>
+        ))}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-[0.6fr_1.4fr]">
+        <Field label={token} htmlFor="near-amount">
+          <Input id="near-amount" className="nums" value={amount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} />
+        </Field>
+        <Field label="Credit to account" htmlFor="credit-to">
+          <Input id="credit-to" className="nums" value={creditTo} placeholder={account || "you.near"} onChange={(event) => setCreditTo(event.target.value)} />
+        </Field>
+      </div>
+      <Button type="submit" variant={isNear ? "cream" : "outline"}>
+        {isNear ? `Deposit ${amount} ${token}` : "Show the deposit call"}
+      </Button>
+      {!isNear ? <p className="text-[0.6875rem] text-faint">Connect a NEAR wallet to send it. Other signers see the unsigned calls.</p> : null}
+      {error ? <p className="text-sm text-ask">{error}</p> : null}
+      <Raw value={result} label="Deposit calls" />
+    </form>
+  );
 }
 
 function WithdrawForm({ account }: { account: string }) {
@@ -307,51 +400,53 @@ function WithdrawForm({ account }: { account: string }) {
   }
 
   return (
-    <form onSubmit={onSubmit} className="rounded-lg border border-line bg-panel p-4">
-      <h2 className="text-sm">Withdraw to your own address</h2>
-      <p className="mt-1 text-xs text-muted">
-        NEAR uses ft_withdraw and stops at simulation in dry-run. Base asks 1Click for a dry quote from Intents USDC. Neither path is broadcast by the server.
-      </p>
-      <div className="mt-3 flex gap-2">
-        <Button
-          type="button"
-          variant={chain === "near" ? "bid" : "outline"}
-          onClick={() => {
-            setChain("near");
-            setAmount("1000000000000000000000000");
-            setTokenId("nep141:wrap.near");
-          }}
-        >
-          NEAR
-        </Button>
-        <Button
-          type="button"
-          variant={chain === "base" ? "bid" : "outline"}
-          onClick={() => {
-            setChain("base");
-            setAmount("20");
-          }}
-        >
-          Base
-        </Button>
+    <form onSubmit={onSubmit} className="space-y-3">
+      <SectionLabel>Withdraw to your own address</SectionLabel>
+      <Explain>
+        NEAR signs an ft_withdraw and stops at simulation in dry-run. Base asks 1Click for a dry quote from Intents USDC. The server does not broadcast
+        either in dry-run.
+      </Explain>
+      <div className="grid grid-cols-2 rounded-sm border border-line-strong p-1">
+        {(
+          [
+            { id: "near", label: "To NEAR" },
+            { id: "base", label: "To Base" },
+          ] as const
+        ).map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => {
+              setChain(option.id);
+              if (option.id === "near") {
+                setAmount("1000000000000000000000000");
+                setTokenId("nep141:wrap.near");
+              } else setAmount("20");
+            }}
+            className={cn("h-9 rounded-[2px] text-sm", chain === option.id ? "bg-ink text-background" : "text-muted hover:text-ink")}
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
-      <label className="mt-3 block text-xs text-muted" htmlFor="withdraw-token">
-        Token id
-      </label>
-      <Input id="withdraw-token" className="mt-1 nums" value={tokenId} onChange={(event) => setTokenId(event.target.value)} />
-      <label className="mt-3 block text-xs text-muted" htmlFor="withdraw-to">
-        Receiver
-      </label>
-      <Input id="withdraw-to" className="mt-1" value={receiverId} placeholder={account || "alice.near"} onChange={(event) => setReceiverId(event.target.value)} />
-      <label className="mt-3 block text-xs text-muted" htmlFor="withdraw-amount">
-        {chain === "base" ? "USDC amount" : "Amount in atoms"}
-      </label>
-      <Input id="withdraw-amount" className="mt-1 nums" value={amount} onChange={(event) => setAmount(event.target.value)} />
-      <Button className="mt-3" type="submit" variant="outline">
+      {chain === "near" ? (
+        <Field label="Token id" htmlFor="withdraw-token">
+          <Input id="withdraw-token" className="nums" value={tokenId} onChange={(event) => setTokenId(event.target.value)} />
+        </Field>
+      ) : null}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Receiver" htmlFor="withdraw-to">
+          <Input id="withdraw-to" className="nums" value={receiverId} placeholder={account || "alice.near"} onChange={(event) => setReceiverId(event.target.value)} />
+        </Field>
+        <Field label={chain === "base" ? "USDC" : "Amount in atoms"} htmlFor="withdraw-amount">
+          <Input id="withdraw-amount" className="nums" value={amount} onChange={(event) => setAmount(event.target.value)} />
+        </Field>
+      </div>
+      <Button type="submit" variant="cream">
         {chain === "base" ? "Quote Base withdrawal" : "Sign and simulate withdraw"}
       </Button>
-      {error ? <p className="mt-3 text-sm text-ask">{error}</p> : null}
-      {result ? <pre className="nums mt-3 max-h-48 overflow-auto text-xs">{JSON.stringify(result, null, 2)}</pre> : null}
+      {error ? <p className="text-sm text-ask">{error}</p> : null}
+      <Raw value={result} />
     </form>
   );
 }

@@ -5,8 +5,15 @@ export default async function EmbedPage({ searchParams }: { searchParams: Promis
   const referrer = params.referrer || "";
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted">Embedded IntentBook{referrer ? ` for referrer ${referrer}` : ""}. Dry-run. The referrer earns a share of the taker fee.</p>
-      <TradeScreen referrer={referrer} />
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
+        <a href="/" target="_blank" rel="noreferrer" className="font-display text-2xl italic leading-none">
+          IntentBook
+        </a>
+        <p className="nums text-[0.6875rem] text-muted">
+          Embedded book{referrer ? ` · ${referrer} earns a share of the taker fee` : ""} · settles on intents.near
+        </p>
+      </div>
+      <TradeScreen referrer={referrer} compact />
     </div>
   );
 }

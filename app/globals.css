@@ -1,41 +1,240 @@
 @import "tailwindcss";
 
+/* IntentBook design tokens. Every colour in the app traces back to one of these. */
 @theme inline {
-  --color-background: #101410;
-  --color-panel: #171c18;
-  --color-panel-2: #222a24;
-  --color-ink: #f4f1e8;
-  --color-muted: #a3ab9f;
-  --color-line: #313a33;
-  --color-bid: #3dcf8e;
-  --color-ask: #ff6b57;
-  --color-lime: #d6f25c;
-  --color-gold: #e2b15a;
-  --font-sans: var(--font-outfit), ui-sans-serif, sans-serif;
-  --font-mono: var(--font-plex), ui-monospace, monospace;
+  --color-background: #0a0b09;
+  --color-panel: #111310;
+  --color-panel-2: #181b16;
+  --color-panel-3: #20241d;
+  --color-ink: #f3eee2;
+  --color-muted: #a9afa1;
+  --color-faint: #6f7569;
+  --color-line: #252922;
+  --color-line-strong: #3a4035;
+  --color-bid: #3ddc97;
+  --color-ask: #ff6a55;
+  --color-lime: #d4f55c;
+  --color-gold: #e8b860;
+  --color-paper: #efe9da;
+  --color-paper-ink: #1c1d18;
+  --color-paper-green: #1d7a4f;
+  --color-paper-amber: #9a6a12;
+  --color-paper-red: #b3341f;
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+  --font-serif: var(--font-instrument), Georgia, serif;
+  --radius-panel: 6px;
+}
+
+:root {
+  color-scheme: dark;
 }
 
 html,
 body {
-  background: #101410;
-  color: #f4f1e8;
+  background: var(--color-background);
+  color: var(--color-ink);
   min-height: 100%;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
-  font-family: var(--font-outfit), ui-sans-serif, sans-serif;
+  font-family: var(--font-sans);
+  /* Faint ledger grid and two ambient glows. */
+  background-image:
+    radial-gradient(60rem 30rem at 85% -10%, color-mix(in oklab, var(--color-lime) 9%, transparent), transparent 70%),
+    radial-gradient(50rem 28rem at -10% 20%, color-mix(in oklab, var(--color-bid) 6%, transparent), transparent 70%),
+    linear-gradient(to right, color-mix(in oklab, var(--color-line) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--color-line) 45%, transparent) 1px, transparent 1px);
+  background-size: auto, auto, 72px 72px, 72px 72px;
+
+}
+
+/* Film grain over everything, never interactive. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.06;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 .font-display {
-  font-family: var(--font-fraunces), Georgia, serif;
+  font-family: var(--font-serif);
+  font-weight: 400;
+  letter-spacing: -0.01em;
 }
 
 .nums {
-  font-family: var(--font-plex), ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
 ::selection {
-  background: #d6f25c;
-  color: #101410;
+  background: var(--color-lime);
+  color: var(--color-background);
+}
+
+/* Motion. Every keyframe the app uses lives here. */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 55%, transparent);
+  }
+  60% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+@keyframes flash-bid {
+  from {
+    background-color: color-mix(in oklab, var(--color-bid) 28%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@keyframes flash-ask {
+  from {
+    background-color: color-mix(in oklab, var(--color-ask) 28%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes stamp {
+  0% {
+    opacity: 0;
+    transform: rotate(-12deg) scale(1.6);
+  }
+  100% {
+    opacity: 1;
+    transform: rotate(-12deg) scale(1);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+.animate-marquee {
+  animation: marquee 60s linear infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 28s linear infinite;
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-out infinite;
+}
+
+.animate-flash-bid {
+  animation: flash-bid 0.9s ease-out;
+}
+
+.animate-flash-ask {
+  animation: flash-ask 0.9s ease-out;
+}
+
+.animate-rise {
+  animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.animate-stamp {
+  animation: stamp 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-panel-2) 0%,
+    var(--color-panel-3) 50%,
+    var(--color-panel-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Receipt paper: perforated top and bottom edges. */
+.receipt {
+  background: var(--color-paper);
+  color: var(--color-paper-ink);
+  --perf: radial-gradient(circle at 6px 0, transparent 5px, #000 5.5px);
+  -webkit-mask:
+    var(--perf) top left / 12px 51% repeat-x,
+    radial-gradient(circle at 6px 100%, transparent 5px, #000 5.5px) bottom left / 12px 51% repeat-x;
+  mask:
+    var(--perf) top left / 12px 51% repeat-x,
+    radial-gradient(circle at 6px 100%, transparent 5px, #000 5.5px) bottom left / 12px 51% repeat-x;
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .animate-marquee,
+  .animate-spin-slow,
+  .animate-pulse-dot,
+  .animate-flash-bid,
+  .animate-flash-ask,
+  .animate-rise,
+  .animate-stamp,
+  .skeleton {
+    animation: none;
+  }
 }

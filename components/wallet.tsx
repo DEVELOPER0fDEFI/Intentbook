@@ -40,7 +40,9 @@ interface WalletApi {
   registerNearKey: () => Promise<void>;
   useDemo: () => void;
   signLeg: (leg: SignLeg) => Promise<SignedIntent>;
-  nearDeposit: (call: { receiverId: string; methodName: string; args: Record<string, string>; gas: string; deposit: string }) => Promise<string>;
+  nearDeposit: (call: NearCall) => Promise<string>;
+  /** Several function calls to one contract in a single wallet transaction. */
+  nearCalls: (receiverId: string, calls: Omit<NearCall, "receiverId">[]) => Promise<string>;
 }
 
 const WalletContext = createContext<WalletApi | null>(null);
@@ -56,6 +58,14 @@ type NearWallet = {
 };
 
 let nearWallet: NearWallet | null = null;
+
+export interface NearCall {
+  receiverId: string;
+  methodName: string;
+  args: Record<string, string>;
+  gas: string;
+  deposit: string;
+}
 
 function prefixKey(value: string, kind: "ed25519"): string {
   return value.startsWith(`${kind}:`) ? value : `${kind}:${value}`;
@@ -271,13 +281,20 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return packEthSignature(leg.message, signature);
   }
 
-  async function nearDeposit(call: { receiverId: string; methodName: string; args: Record<string, string>; gas: string; deposit: string }) {
-    if (!nearWallet?.signAndSendTransaction) throw new Error("Connect a NEAR wallet to deposit from NEAR");
+  async function nearCalls(receiverId: string, calls: Omit<NearCall, "receiverId">[]) {
+    if (!nearWallet?.signAndSendTransaction) throw new Error("Connect a NEAR wallet to send this from NEAR");
     const outcome = await nearWallet.signAndSendTransaction({
-      receiverId: call.receiverId,
-      actions: [{ type: "FunctionCall", params: { methodName: call.methodName, args: call.args, gas: call.gas, deposit: call.deposit } }],
+      receiverId,
+      actions: calls.map((call) => ({
+        type: "FunctionCall" as const,
+        params: { methodName: call.methodName, args: call.args, gas: call.gas, deposit: call.deposit },
+      })),
     });
     return outcome?.transaction?.hash || "";
+  }
+
+  async function nearDeposit(call: NearCall) {
+    return nearCalls(call.receiverId, [call]);
   }
 
   const value: WalletApi = {
@@ -292,6 +309,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     useDemo,
     signLeg,
     nearDeposit,
+    nearCalls,
   };
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

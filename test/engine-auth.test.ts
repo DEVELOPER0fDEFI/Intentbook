@@ -215,10 +215,19 @@ test("two takers on one lot: the first signature wins, the second gets 409", asy
   const b = await api("orders/preview", { account: second.accountId, ...order });
   assert.ok(a.body.take && b.body.take);
   assert.deepEqual(a.body.take.lotIds, b.body.take.lotIds);
+  const bestAsk = (await engine.book("ETH-USDC")).bestAsk;
   const won = await api("orders", { previewId: a.body.previewId, take: signNep413(first, a.body.take) });
   assert.equal(won.status, 200, JSON.stringify(won.body));
+  assert.equal(won.body.fill.price, bestAsk, "a fill reports the maker's price, with the fee separate");
+  assert.notEqual(won.body.fill.takerFee, "0");
   const lost = await api("orders", { previewId: b.body.previewId, take: signNep413(second, b.body.take) });
   assert.equal(lost.status, 409);
+
+  // The maker refills the filled level, so the next one-lot order can match too.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const refilled = await engine.book("ETH-USDC");
+  assert.equal(refilled.asks.length, 6);
+  assert.equal(refilled.asks[0]?.qty, "0.002");
 });
 
 test("Phantom-style raw_ed25519 orders go through with a nonce in the payload", async () => {

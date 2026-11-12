@@ -1,102 +1,157 @@
 "use client";
 
+import { BookOpenText, Code2, ListOrdered, Wallet as WalletIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { nearblocksAccount, shortAccount } from "@/lib/format";
-import { cn } from "@/lib/cn";
+import { useHealth } from "@/components/site/use-market";
+import { KIND_LABEL, WalletDialog } from "@/components/site/wallet-dialog";
 import { useWallet } from "@/components/wallet";
+import { shortAccount } from "@/lib/format";
+import { cn } from "@/lib/cn";
 
-const links = [
-  { href: "/", label: "Trade" },
-  { href: "/orders", label: "Orders" },
-  { href: "/funds", label: "Funds" },
-  { href: "/developers", label: "API" },
+export const NAV = [
+  { href: "/", label: "Trade", icon: BookOpenText },
+  { href: "/orders", label: "Orders", icon: ListOrdered },
+  { href: "/funds", label: "Funds", icon: WalletIcon },
+  { href: "/developers", label: "Build", icon: Code2 },
 ];
+
+function StatusPill({ compact = false }: { compact?: boolean }) {
+  const health = useHealth();
+  const live = health?.liveExecution === "armed";
+  return (
+    <span
+      title={live ? "Live: matches that pass simulation are broadcast with execute_intents" : "Dry-run: every match is checked with simulate_intents; nothing is broadcast"}
+      className={cn(
+        "nums inline-flex h-8 items-center gap-2 rounded-sm border px-2.5 text-[0.625rem] uppercase tracking-[0.14em]",
+        live ? "border-ask/50 text-ask" : "border-lime/40 text-lime",
+      )}
+    >
+      <span className="animate-pulse-dot size-1.5 rounded-full bg-current" />
+      {compact ? (live ? "Live" : "Dry") : live ? "Live on mainnet" : "Dry-run · mainnet sim"}
+    </span>
+  );
+}
 
 export function SiteHeader() {
   const pathname = usePathname();
   const wallet = useWallet();
-  const [fee, setFee] = useState<string>("");
-  const [takerFee, setTakerFee] = useState("");
-  const [salt, setSalt] = useState("");
-  const [live, setLive] = useState("off");
-  const account = wallet.session?.accountId ?? "";
-
-  useEffect(() => {
-    fetch("/api/v1/health")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.feePips != null) setFee(String(data.feePips));
-        if (data.takerFeeBps != null) setTakerFee(String(data.takerFeeBps));
-        if (data.salt) setSalt(data.salt);
-        if (data.liveExecution) setLive(String(data.liveExecution));
-      })
-      .catch(() => undefined);
-  }, []);
+  const session = wallet.session;
+  if (pathname.startsWith("/embed")) return null;
 
   return (
-    <header className="border-b border-line">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-4 px-4 py-3">
-        <Link href="/" className="mr-2">
-          <span className="font-display text-2xl italic tracking-tight">IntentBook</span>
-          <span className="mt-0.5 block text-[11px] uppercase tracking-[0.16em] text-muted">Public book for NEAR Intents</span>
+    <header className="sticky top-0 z-50 border-b border-line bg-background/85 backdrop-blur-md">
+      <div className="mx-auto flex h-16 max-w-[1400px] items-center gap-6 px-4">
+        <Link href="/" className="group flex items-baseline gap-2" aria-label="IntentBook home">
+          <span className="font-display text-[1.75rem] italic leading-none">IntentBook</span>
+          <span className="eyebrow hidden !text-[0.625rem] text-faint lg:inline">No. 01 · NEAR Intents</span>
         </Link>
-        <nav className="flex items-center gap-1">
-          {links.map((link) => {
+        <nav className="hidden items-center md:flex" aria-label="Main">
+          {NAV.map((link) => {
             const active = pathname === link.href;
             return (
               <Link
                 key={link.href}
                 href={link.href}
+                aria-current={active ? "page" : undefined}
                 className={cn(
-                  "rounded-md px-3 py-1.5 text-sm",
-                  active ? "bg-panel-2 text-ink" : "text-muted hover:text-ink",
+                  "relative flex h-16 items-center px-3 text-sm transition-colors",
+                  active ? "text-ink" : "text-muted hover:text-ink",
                 )}
               >
                 {link.label}
+                <span className={cn("absolute inset-x-3 bottom-0 h-0.5 bg-lime transition-transform", active ? "scale-x-100" : "scale-x-0")} />
               </Link>
             );
           })}
         </nav>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <span className="rounded-full bg-lime px-2.5 py-1 text-[11px] font-medium text-background">{live === "off" ? "DRY-RUN" : `LIVE ${live}`}</span>
-          <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.connectNear()} disabled={wallet.busy}>
-            NEAR wallet
-          </button>
-          <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.connectEvm()} disabled={wallet.busy}>
-            MetaMask
-          </button>
-          <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.connectSolana()} disabled={wallet.busy}>
-            Phantom
-          </button>
-          {wallet.session?.kind === "near" && wallet.session.accountId.includes(".") ? (
-            <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => void wallet.registerNearKey()} disabled={wallet.busy}>
-              Register key
-            </button>
-          ) : null}
-          <button type="button" className="rounded-md border border-line px-2 py-1 text-xs" onClick={() => wallet.useDemo()}>
-            Demo key
-          </button>
-          {account ? (
-            <a className="nums text-xs text-muted hover:text-ink" href={nearblocksAccount(account)}>
-              {wallet.session?.kind ?? "demo"} {shortAccount(account)}
-            </a>
-          ) : (
-            <span className="text-xs text-muted">Preparing demo key</span>
-          )}
+        <div className="ml-auto flex items-center gap-2">
+          <span className="hidden sm:inline-flex">
+            <StatusPill />
+          </span>
+          <span className="sm:hidden">
+            <StatusPill compact />
+          </span>
+          <WalletDialog
+            trigger={
+              <button
+                type="button"
+                className={cn(
+                  "inline-flex h-11 items-center gap-2 rounded-sm px-3 text-sm transition-colors",
+                  session ? "border border-line-strong hover:border-ink/40" : "bg-ink text-background hover:bg-lime",
+                )}
+              >
+                {session ? (
+                  <>
+                    <span className="eyebrow hidden !text-[0.625rem] text-muted sm:inline">{KIND_LABEL[session.kind]}</span>
+                    <span className="nums text-xs">{shortAccount(session.accountId)}</span>
+                  </>
+                ) : (
+                  "Connect"
+                )}
+              </button>
+            }
+          />
         </div>
       </div>
-      <div className="border-t border-line/70 bg-panel/60">
-        <p className="mx-auto max-w-7xl px-4 py-2 text-xs text-muted">
-          {live === "off" ? "Dry-run is on. execute_intents is not called." : "Live mode is armed. A failed simulation is refused."}{" "}
-          Sign with a NEAR wallet, MetaMask, or the demo key.
-          {takerFee ? ` Taker fee ${takerFee} bps. Maker fee 0.` : ""}
-          {fee ? ` Protocol fee ${fee} pip.` : ""}
-          {salt ? ` Salt ${salt}.` : ""}
-          {wallet.error ? ` ${wallet.error}` : ""}
+    </header>
+  );
+}
+
+/** Phone navigation: fixed to the bottom with safe-area padding. */
+export function BottomNav() {
+  const pathname = usePathname();
+  if (pathname.startsWith("/embed")) return null;
+  return (
+    <nav
+      aria-label="Main"
+      className="fixed inset-x-0 bottom-0 z-50 border-t border-line bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
+    >
+      <ul className="grid grid-cols-4">
+        {NAV.map((link) => {
+          const active = pathname === link.href;
+          const Icon = link.icon;
+          return (
+            <li key={link.href}>
+              <Link
+                href={link.href}
+                aria-current={active ? "page" : undefined}
+                className={cn("flex min-h-14 flex-col items-center justify-center gap-1 text-[0.6875rem]", active ? "text-lime" : "text-muted")}
+              >
+                <Icon className="size-[18px]" />
+                {link.label}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
+  );
+}
+
+export function SiteFooter() {
+  const pathname = usePathname();
+  if (pathname.startsWith("/embed")) return null;
+  return (
+    <footer className="mt-16 border-t border-line">
+      <div className="mx-auto flex max-w-[1400px] flex-col gap-3 px-4 py-8 text-xs text-muted sm:flex-row sm:items-center sm:justify-between">
+        <p>
+          <span className="font-display text-base italic text-ink">IntentBook</span> · a public order book that settles through NEAR Intents.
+          Built for the NEAR Hackathon, November 2026.
+        </p>
+        <p className="nums flex flex-wrap gap-4">
+          <a className="hover:text-ink" href="https://github.com/DEVELOPER0fDEFI/Intentbook" target="_blank" rel="noreferrer">
+            GitHub ↗︎
+          </a>
+          <a className="hover:text-ink" href="/openapi.json">
+            OpenAPI
+          </a>
+          <Link className="hover:text-ink" href="/api/v1/health" prefetch={false}>
+            Health
+          </Link>
+          <span>Apache-2.0</span>
         </p>
       </div>
-    </header>
+    </footer>
   );
 }

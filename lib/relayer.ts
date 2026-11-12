@@ -16,7 +16,7 @@ export async function broadcastExecute(signed: SignedIntent[]): Promise<{ txHash
   await keyStore.setKey("mainnet", accountId, near.KeyPair.fromString(privateKey as never));
   const connection = await near.connect({
     networkId: "mainnet",
-    nodeUrl: process.env.NEAR_RPC_URL || "https://rpc.mainnet.near.org",
+    nodeUrl: process.env.NEAR_RPC_URL || "https://rpc.fastnear.com",
     keyStore,
   });
   const account = await connection.account(accountId);

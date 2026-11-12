@@ -1,103 +1,98 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { PAIRS } from "@/lib/assets";
-import type { PairId } from "@/lib/types";
+import { Activity } from "lucide-react";
+import { useEffect, useState } from "react";
 import { PriceCompare } from "@/components/price-compare";
+import { useTicker } from "@/components/site/use-market";
+import { BookLadder } from "@/components/trade/book-ladder";
+import { MidChart } from "@/components/trade/mid-chart";
+import { OrderTicket } from "@/components/trade/order-ticket";
+import { PairBar } from "@/components/trade/pair-bar";
+import type { Book, FillView, PlaceResult, Preview } from "@/components/trade/types";
 import { useWallet } from "@/components/wallet";
-import { parsePlain } from "@/lib/parse";
-import { shortAccount } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import type { Side } from "@/lib/types";
+import { SectionLabel } from "@/components/ui/panel";
+import { EmptyState } from "@/components/ui/states";
+import { PAIRS } from "@/lib/assets";
+import { parsePlain } from "@/lib/parse";
+import type { PairId, Side } from "@/lib/types";
+import { cn } from "@/lib/cn";
 
-interface Level {
-  price: string;
-  qty: string;
-  total: string;
-  orders: number;
+type Pane = "book" | "ticket" | "market";
+
+function timeAgo(iso?: string): string {
+  if (!iso) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${Math.round(seconds / 3600)}h`;
 }
 
-interface Book {
-  pair: string;
-  mid: string | null;
-  source: string | null;
-  rheaMid?: string | null;
-  bestBid: string | null;
-  bestAsk: string | null;
-  spread: string | null;
-  bids: Level[];
-  asks: Level[];
+function MatchTape({ trades, base }: { trades: FillView[]; base: string }) {
+  return (
+    <section className="rounded-[var(--radius-panel)] border border-line bg-panel/90" aria-label="Recent matches">
+      <header className="flex min-h-11 items-center justify-between border-b border-line px-4">
+        <p className="eyebrow text-muted">Recent matches</p>
+        <p className="nums text-[0.625rem] text-faint">every fill is simulated on mainnet</p>
+      </header>
+      {trades.length === 0 ? (
+        <EmptyState
+          icon={<Activity className="size-4" />}
+          title="No matches on this market yet"
+          body="Buy at the best ask or sell at the best bid to cross the maker ladder. The batch is checked with simulate_intents."
+        />
+      ) : (
+        <ul className="divide-y divide-line">
+          {trades.slice(0, 7).map((trade) => (
+            <li key={String(trade.id)} className="nums flex min-h-11 items-center justify-between gap-3 px-4 text-xs">
+              <span className="w-8 shrink-0 text-faint">{timeAgo(trade.createdAt)}</span>
+              <span className="flex-1">
+                {trade.baseQty} {base} <span className="text-faint">@</span> {trade.price}
+              </span>
+              <Badge value={String(trade.settlement ?? trade.status)} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
 }
 
-interface Point {
-  t: number;
-  mid: number;
-}
-
-interface PreviewLeg {
-  message: string;
-  nonce: string;
-  standard: "nep413" | "erc191" | "raw_ed25519";
-  baseQty: string;
-  quoteQty: string;
-  price: string;
-  fee: string;
-  deadline: string;
-}
-
-interface Preview {
-  previewId: string;
-  warnings: string[];
-  take: PreviewLeg | null;
-  rest: PreviewLeg | null;
-  fallback: unknown;
-  fallbackError: string | null;
-}
-
-export function TradeScreen({ referrer = "" }: { referrer?: string }) {
+export function TradeScreen({ referrer = "", compact = false }: { referrer?: string; compact?: boolean }) {
   const [pair, setPair] = useState<PairId>("BTC-USDC");
   const [side, setSide] = useState<Side>("BUY");
   const [orderType, setOrderType] = useState<"LIMIT" | "MARKET">("LIMIT");
-  const [qty, setQty] = useState(PAIRS["BTC-USDC"].suggested);
+  const [qty, setQty] = useState(PAIRS["BTC-USDC"].lot);
   const [price, setPrice] = useState("");
-  const [plain, setPlain] = useState("");
   const [book, setBook] = useState<Book | null>(null);
-  const [history, setHistory] = useState<Point[]>([]);
-  const [trades, setTrades] = useState<Record<string, unknown>[]>([]);
-  const [mids, setMids] = useState<Record<string, string>>({});
+  const [trades, setTrades] = useState<FillView[]>([]);
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [draft, setDraft] = useState<Preview | null>(null);
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [result, setResult] = useState<PlaceResult | null>(null);
+  const [pane, setPane] = useState<Pane>("book");
+  const [updated, setUpdated] = useState<number | null>(null);
+  const ticker = useTicker(5000);
   const wallet = useWallet();
   const account = wallet.session?.accountId ?? "";
+  const row = ticker.find((item) => item.pair === pair);
 
   async function refresh(next = pair) {
-    const [bookRes, tickerRes, tradeRes] = await Promise.all([
-      fetch(`/api/v1/book?pair=${next}`),
-      fetch("/api/v1/ticker"),
-      fetch(`/api/v1/trades?pair=${next}`),
-    ]);
-    if (bookRes.ok) setBook(await bookRes.json());
-    if (tickerRes.ok) {
-      const ticker = await tickerRes.json();
-      const rows = (ticker.pairs ?? []) as { pair: string; mid: string | null; history: Point[] }[];
-      setMids(Object.fromEntries(rows.map((row) => [row.pair, row.mid ?? ""])));
-      setHistory(rows.find((row) => row.pair === next)?.history ?? []);
+    const [bookRes, tradeRes] = await Promise.all([fetch(`/api/v1/book?pair=${next}`), fetch(`/api/v1/trades?pair=${next}`)]);
+    if (bookRes.ok) {
+      setBook(await bookRes.json());
+      setUpdated(Date.now());
     }
-    if (tradeRes.ok) {
-      const body = await tradeRes.json();
-      setTrades(body.trades ?? []);
-    }
+    if (tradeRes.ok) setTrades(((await tradeRes.json()).trades ?? []) as FillView[]);
   }
 
   useEffect(() => {
+    setBook(null);
     refresh().catch(() => setError("The book API is not responding yet."));
-    const timer = setInterval(() => refresh().catch(() => undefined), 2500);
-    const stream = new EventSource("/api/v1/stream");
+    const timer = setInterval(() => refresh().catch(() => undefined), 3000);
+    const stream = new EventSource(`/api/v1/stream?pair=${pair}`);
     stream.onmessage = () => refresh().catch(() => undefined);
     return () => {
       clearInterval(timer);
@@ -107,31 +102,37 @@ export function TradeScreen({ referrer = "" }: { referrer?: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pair]);
 
-  const asks = useMemo(() => [...(book?.asks ?? [])].reverse(), [book]);
-  const maxTotal = useMemo(() => {
-    const values = [...(book?.bids ?? []), ...(book?.asks ?? [])].map((level) => Number(level.total.replace(/,/g, "")) || 0);
-    return Math.max(1, ...values);
-  }, [book]);
+  function selectPair(next: PairId) {
+    setPair(next);
+    setQty(PAIRS[next].lot);
+    setPrice("");
+    setDraft(null);
+    setResult(null);
+  }
 
-  function applyPlain() {
-    const parsed = parsePlain(plain);
+  function applyPlain(text: string) {
+    const parsed = parsePlain(text);
     if (!parsed) {
-      setError("Try: buy 0.0001 BTC at 90k");
+      setError('Try a sentence like "buy 0.0001 btc at 90k" or "sell 2 near at market".');
       return;
     }
-    setPair(parsed.pair);
+    if (parsed.pair !== pair) selectPair(parsed.pair);
     setSide(parsed.side);
     setQty(parsed.qty);
     setOrderType(parsed.orderType);
-    if (parsed.price) setPrice(parsed.price);
+    setPrice(parsed.price ?? "");
     setError("");
+    setPane("ticket");
   }
 
   async function submit(sign: boolean) {
     setBusy(true);
     setError("");
+    setNotice("");
+    setResult(null);
     try {
-      if (!account) throw new Error("Choose the demo key or connect a wallet first");
+      if (!account) throw new Error("Choose a signer first: the demo key works without a wallet.");
+      setPhase("Building order…");
       const limit = price || (side === "BUY" ? book?.bestAsk : book?.bestBid) || "";
       const previewRes = await fetch("/api/v1/orders/preview", {
         method: "POST",
@@ -148,247 +149,116 @@ export function TradeScreen({ referrer = "" }: { referrer?: string }) {
         }),
       });
       const preview = await previewRes.json();
-      if (!previewRes.ok) throw new Error(preview.error || "Could not review the order");
+      if (!previewRes.ok) throw new Error(preview.error || "Could not build the order");
       setDraft(preview);
       if (!sign) return;
+      setPhase("Waiting for signature…");
       const body: Record<string, unknown> = { previewId: preview.previewId };
       if (preview.take) body.take = await wallet.signLeg(preview.take);
       if (preview.rest) body.rest = await wallet.signLeg(preview.rest);
+      setPhase("Simulating on mainnet…");
       const placed = await fetch("/api/v1/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await placed.json();
+      const data = (await placed.json()) as PlaceResult;
       if (!placed.ok) throw new Error(data.error || "Could not place the order");
-      setResult(data);
+      if (data.ok !== false && !data.fill && !(data.orders?.length)) {
+        setNotice(
+          `Nothing matched. The book fills whole maker lots only, and no lot fits ${qty} ${PAIRS[pair].base} right now. Try a larger size, or rest a limit order. The 1Click comparison above is a quote only.`,
+        );
+      } else {
+        setResult(data);
+      }
+      if (data.ok === false && data.error) setError(data.error);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Order failed");
     } finally {
       setBusy(false);
+      setPhase("");
     }
   }
 
-  const fill = (result?.fill ?? null) as { settlement?: string; note?: string; simulate?: unknown; price?: string; baseQty?: string; quoteQty?: string } | null;
+  const base = PAIRS[pair].base;
+  const panes: { id: Pane; label: string }[] = [
+    { id: "book", label: "Book" },
+    { id: "ticket", label: "Trade" },
+    { id: "market", label: "Market" },
+  ];
 
   return (
-    <div className="space-y-4">
-      <div className="flex gap-2 overflow-x-auto">
-        {(Object.keys(PAIRS) as PairId[]).map((id) => (
-          <button
-            key={id}
-            onClick={() => {
-              setPair(id);
-              setQty(PAIRS[id].suggested);
-              setPrice("");
-            }}
-            className={`min-w-28 rounded-lg border px-3 py-2 text-left ${pair === id ? "border-lime bg-panel" : "border-line bg-transparent"}`}
-          >
-            <span className="block text-sm">{id.replace("-USDC", "")}</span>
-            <span className="nums text-xs text-muted">{mids[id] ? `$${mids[id]}` : "..."}</span>
-          </button>
-        ))}
-      </div>
-
-      <PriceCompare pair={pair} side={side} qty={qty} />
-
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(260px,0.85fr)_minmax(300px,0.95fr)]">
-        <section className="order-2 space-y-4 lg:order-1">
-          <div className="rounded-lg border border-line bg-panel p-4">
-            <div className="flex items-end justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.14em] text-muted">Reference mid</p>
-                <p className="nums font-display text-4xl">{book?.mid ? `$${book.mid}` : "Loading"}</p>
-              </div>
-              <p className="max-w-48 text-right text-xs text-muted">
-                {book?.source ?? "Waiting for 1Click token prices"}
-                {book?.rheaMid ? `. Rhea ${book.rheaMid}` : ""}
-              </p>
-            </div>
-            <Chart points={history} />
+    <section id="terminal" className={cn("scroll-mt-24", compact ? "" : "pt-10")}>
+      {compact ? null : (
+        <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <SectionLabel tone="lime">Terminal</SectionLabel>
+            <h2 className="font-display mt-1 text-4xl leading-none sm:text-5xl">The book, live.</h2>
           </div>
-          <div className="rounded-lg border border-line bg-panel p-4">
-            <h2 className="text-sm text-muted">Recent matches</h2>
-            {trades.length === 0 ? (
-              <p className="mt-3 text-sm">No matches yet. A buy at the best ask will cross the maker quotes.</p>
-            ) : (
-              <ul className="mt-3 space-y-2">
-                {trades.slice(0, 6).map((trade) => (
-                  <li key={String(trade.id)} className="flex items-center justify-between gap-3 text-sm">
-                    <span className="nums">
-                      {String(trade.baseQty)} {pair.slice(0, pair.indexOf("-"))} @ {String(trade.price)}
-                    </span>
-                    <Badge value={String(trade.settlement ?? trade.status)} />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </section>
-
-        <section className="order-3 rounded-lg border border-line bg-panel p-3 lg:order-2">
-          <div className="nums mb-2 grid grid-cols-3 px-2 text-[11px] uppercase tracking-wide text-muted">
-            <span>Price</span>
-            <span className="text-right">Size</span>
-            <span className="text-right">Total USDC</span>
-          </div>
-          {!book ? <p className="px-2 py-8 text-sm text-muted">Loading the book.</p> : null}
-          {book && asks.length === 0 && book.bids.length === 0 ? (
-            <p className="px-2 py-8 text-sm text-muted">The book is quiet. Reference prices load the maker ladder.</p>
-          ) : null}
-          <div className="space-y-0.5">
-            {asks.map((level) => (
-              <LevelRow key={`a-${level.price}`} level={level} tone="ask" max={maxTotal} onPick={setPrice} />
-            ))}
-          </div>
-          <div className="my-2 rounded-md bg-background px-2 py-2 text-center text-xs text-muted">
-            Spread {book?.spread ?? "-"} | bid {book?.bestBid ?? "-"} | ask {book?.bestAsk ?? "-"}
-          </div>
-          <div className="space-y-0.5">
-            {(book?.bids ?? []).map((level) => (
-              <LevelRow key={`b-${level.price}`} level={level} tone="bid" max={maxTotal} onPick={setPrice} />
-            ))}
-          </div>
-        </section>
-
-        <section className="order-1 rounded-lg border border-line bg-panel p-4 lg:order-3">
-          <label className="text-xs uppercase tracking-[0.14em] text-muted" htmlFor="plain">
-            Plain language
-          </label>
-          <div className="mt-2 flex gap-2">
-            <Input id="plain" value={plain} placeholder="buy 0.0001 BTC at 90k" onChange={(event) => setPlain(event.target.value)} />
-            <Button type="button" variant="outline" onClick={applyPlain}>
-              Use
-            </Button>
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <Button type="button" variant={side === "BUY" ? "bid" : "outline"} onClick={() => setSide("BUY")}>
-              Buy
-            </Button>
-            <Button type="button" variant={side === "SELL" ? "ask" : "outline"} onClick={() => setSide("SELL")}>
-              Sell
-            </Button>
-          </div>
-          <label className="mt-4 block text-xs text-muted" htmlFor="qty">
-            Amount ({PAIRS[pair].base})
-          </label>
-          <Input id="qty" className="mt-1 nums" value={qty} inputMode="decimal" onChange={(event) => setQty(event.target.value)} />
-          <div className="mt-4 flex items-center justify-between">
-            <label className="text-xs text-muted" htmlFor="price">
-              Limit price (USDC)
-            </label>
-            <button className="text-xs text-lime" type="button" onClick={() => setOrderType(orderType === "MARKET" ? "LIMIT" : "MARKET")}>
-              {orderType === "MARKET" ? "Switch to limit" : "Switch to market"}
-            </button>
-          </div>
-          <Input
-            id="price"
-            className="mt-1 nums"
-            disabled={orderType === "MARKET"}
-            placeholder={side === "BUY" ? book?.bestAsk ?? "Best ask" : book?.bestBid ?? "Best bid"}
-            value={orderType === "MARKET" ? "" : price}
-            onChange={(event) => setPrice(event.target.value)}
-          />
-          <p className="mt-3 text-xs leading-5 text-muted">
-            Funds stay in your Intents account. This demo key {account ? shortAccount(account) : ""} signs a token_diff. A resting
-            order does not lock the balance. Market size the book cannot take is quoted on 1Click with dry: true.
+          <p className="nums flex items-center gap-2 text-[0.6875rem] text-muted">
+            <span className="animate-pulse-dot size-1.5 rounded-full bg-bid text-bid" />
+            streaming · {updated ? new Date(updated).toISOString().slice(11, 19) : "–"} UTC
           </p>
-          {error ? <p className="mt-3 text-sm text-ask">{error}</p> : null}
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <Button type="button" variant="outline" disabled={busy} onClick={() => submit(false)}>
-              Review
-            </Button>
-            <Button type="button" disabled={busy} onClick={() => submit(true)}>
-              {busy ? "Signing" : "Sign and place"}
-            </Button>
-          </div>
-          {draft ? (
-            <div className="mt-4 space-y-2 text-sm">
-              {draft.warnings.map((warning) => (
-                <p key={warning} className="text-muted">
-                  {warning}
-                </p>
-              ))}
-              {draft.take ? (
-                <p>
-                  Take {draft.take.baseQty} at {draft.take.price} for {draft.take.quoteQty} USDC. Taker fee {draft.take.fee} USDC. Maker fee 0.
-                </p>
-              ) : null}
-              {draft.rest ? (
-                <p>
-                  Rest {draft.rest.baseQty} at {draft.rest.price} until {draft.rest.deadline?.slice(11, 19) ?? "the deadline"}.
-                </p>
-              ) : null}
-              {draft.fallbackError ? <p className="text-ask">1Click: {draft.fallbackError}</p> : null}
-            </div>
-          ) : null}
-          {fill ? (
-            <div className="mt-4 rounded-md border border-line bg-background p-3">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-sm">
-                  {fill.baseQty} @ {fill.price}
-                </p>
-                <Badge value={String(fill.settlement)} />
-              </div>
-              <p className="mt-2 text-xs leading-5 text-muted">{fill.note}</p>
-              <Dialog trigger={<Button className="mt-3" variant="outline" size="sm">Open simulate_intents</Button>} title="simulate_intents">
-                <pre className="nums max-h-96 overflow-auto text-xs">{JSON.stringify(fill.simulate, null, 2)}</pre>
-              </Dialog>
-            </div>
-          ) : null}
-        </section>
+        </div>
+      )}
+
+      <PairBar pair={pair} rows={ticker} onSelect={selectPair} />
+
+      <div className="sticky top-16 z-30 -mx-4 mt-3 border-y border-line bg-background/90 px-4 py-2 backdrop-blur-md md:hidden">
+        <div className="grid grid-cols-3 rounded-sm border border-line-strong p-1" role="tablist" aria-label="Terminal view">
+          {panes.map((item) => (
+            <button
+              key={item.id}
+              role="tab"
+              aria-selected={pane === item.id}
+              onClick={() => setPane(item.id)}
+              className={cn("h-9 rounded-[2px] text-sm", pane === item.id ? "bg-ink text-background" : "text-muted")}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
-    </div>
-  );
-}
 
-function LevelRow({
-  level,
-  tone,
-  max,
-  onPick,
-}: {
-  level: Level;
-  tone: "bid" | "ask";
-  max: number;
-  onPick: (price: string) => void;
-}) {
-  const width = Math.min(100, ((Number(level.total.replace(/,/g, "")) || 0) / max) * 100);
-  return (
-    <button type="button" onClick={() => onPick(level.price)} className="relative block w-full rounded px-2 py-1 text-left hover:bg-panel-2">
-      <span
-        className={`absolute inset-y-0 right-0 ${tone === "ask" ? "bg-ask/15" : "bg-bid/15"}`}
-        style={{ width: `${width}%` }}
-      />
-      <span className="nums relative grid grid-cols-3 text-xs">
-        <span className={tone === "ask" ? "text-ask" : "text-bid"}>{level.price}</span>
-        <span className="text-right">{level.qty}</span>
-        <span className="text-right text-muted">{level.total}</span>
-      </span>
-    </button>
-  );
-}
-
-function Chart({ points }: { points: Point[] }) {
-  if (points.length < 2) {
-    return <p className="mt-6 text-sm text-muted">The mid line appears as the server samples 1Click prices.</p>;
-  }
-  const width = 640;
-  const height = 160;
-  const pad = 8;
-  const values = points.map((point) => point.mid);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const coords = points.map((point, index) => {
-    const x = pad + (index / (points.length - 1)) * (width - pad * 2);
-    const y = height - pad - ((point.mid - min) / span) * (height - pad * 2);
-    return `${x},${y}`;
-  });
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="mt-4 h-40 w-full" role="img" aria-label="Reference mid">
-      <polyline fill="none" stroke="#d6f25c" strokeWidth="2" points={coords.join(" ")} />
-    </svg>
+      <div className="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-[minmax(290px,0.85fr)_minmax(0,1.25fr)_minmax(320px,0.95fr)]">
+        <BookLadder
+          book={book}
+          base={base}
+          className={cn("md:order-1", pane === "book" ? "" : "hidden md:flex")}
+          onPick={(value) => {
+            setOrderType("LIMIT");
+            setPrice(value);
+            setPane("ticket");
+          }}
+        />
+        <div className={cn("space-y-3 md:order-3 md:col-span-2 lg:order-2 lg:col-span-1", pane === "market" ? "" : "hidden md:block")}>
+          <MidChart points={row?.history ?? []} mid={book?.mid ?? row?.mid ?? null} source={book?.source ?? null} rheaMid={book?.rheaMid} base={base} />
+          <PriceCompare pair={pair} side={side} qty={qty} />
+          <MatchTape trades={trades} base={base} />
+        </div>
+        <OrderTicket
+          className={cn("md:order-2 lg:order-3 lg:sticky lg:top-20 lg:self-start", pane === "ticket" ? "" : "hidden md:block")}
+          pair={pair}
+          side={side}
+          setSide={setSide}
+          orderType={orderType}
+          setOrderType={setOrderType}
+          qty={qty}
+          setQty={setQty}
+          price={price}
+          setPrice={setPrice}
+          book={book}
+          busy={busy}
+          phase={phase}
+          error={error}
+          notice={notice}
+          draft={draft}
+          result={result}
+          onPlain={applyPlain}
+          onSubmit={(sign) => void submit(sign)}
+        />
+      </div>
+    </section>
   );
 }

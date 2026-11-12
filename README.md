@@ -190,7 +190,7 @@ Pairs: `BTC-USDC`, `ETH-USDC`, `SOL-USDC`, `NEAR-USDC`. Asset ids are loaded fro
 | `INTENTBOOK_OPERATOR_SECRET` | Live matches | ed25519 secret (64 hex characters or `ed25519:<base58>`) for the operator that signs the taker fee and the protocol closure. Its implicit account receives the fees. Without it a throwaway key is made at each boot and live matches are refused. |
 | `INTENTBOOK_MM_SECRET` | Live matches | ed25519 secret for the market-maker ladder. It can be the same key as the operator. |
 | `INTENTBOOK_LOT_<BASE>` | No | Maker lot override, for example `INTENTBOOK_LOT_NEAR=0.1` for a small live test. Defaults: BTC 0.0001, ETH 0.002, SOL 0.1, NEAR 2. |
-| `NEAR_RPC_URL` | No | Defaults to `https://rpc.mainnet.near.org`, then `https://rpc.fastnear.com`. |
+| `NEAR_RPC_URL` | No | Defaults to `https://rpc.fastnear.com`, then `https://rpc.mainnet.near.org`. |
 | `INTENTS_CONTRACT` | No | Defaults to `intents.near`. |
 | `ONECLICK_BASE` | No | Defaults to `https://1click.chaindefuser.com`. |
 | `MM_INTERVAL_MS` | No | Maker refresh. Default 45000. |

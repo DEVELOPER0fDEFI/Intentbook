@@ -1,30 +1,42 @@
 import { cn } from "@/lib/cn";
 
 const tones: Record<string, string> = {
-  OPEN: "bg-lime/15 text-lime",
-  FILLED: "bg-bid/15 text-bid",
-  SIMULATED: "bg-gold/15 text-gold",
-  CANCELLED: "bg-panel-2 text-muted",
-  EXPIRED: "bg-panel-2 text-gold",
-  DEAD: "bg-ask/15 text-ask",
-  FAILED: "bg-ask/15 text-ask",
-  SUCCESS: "bg-bid/15 text-bid",
-  REFUNDED: "bg-gold/15 text-gold",
-  PENDING_DEPOSIT: "bg-panel-2 text-ink",
-  PROCESSING: "bg-lime/15 text-lime",
-  INCOMPLETE_DEPOSIT: "bg-gold/15 text-gold",
-  KNOWN_DEPOSIT_TX: "bg-panel-2 text-ink",
-  unfunded: "bg-gold/15 text-gold",
-  executed: "bg-bid/15 text-bid",
-  rejected: "bg-ask/15 text-ask",
-  broadcast: "bg-bid/15 text-bid",
-  SETTLED: "bg-bid/15 text-bid",
+  OPEN: "border-lime/40 text-lime",
+  FILLED: "border-bid/40 text-bid",
+  SIMULATED: "border-gold/40 text-gold",
+  CANCELLED: "border-line-strong text-muted",
+  EXPIRED: "border-gold/30 text-gold",
+  DEAD: "border-ask/40 text-ask",
+  FAILED: "border-ask/40 text-ask",
+  SUCCESS: "border-bid/40 text-bid",
+  REFUNDED: "border-gold/40 text-gold",
+  PENDING_DEPOSIT: "border-line-strong text-ink",
+  PROCESSING: "border-lime/40 text-lime",
+  INCOMPLETE_DEPOSIT: "border-gold/40 text-gold",
+  KNOWN_DEPOSIT_TX: "border-line-strong text-ink",
+  unfunded: "border-gold/40 text-gold",
+  executed: "border-bid/40 text-bid",
+  rejected: "border-ask/40 text-ask",
+  broadcast: "border-bid/40 text-bid",
+  SETTLED: "border-bid/40 text-bid",
 };
 
-export function Badge({ value }: { value: string }) {
+const labels: Record<string, string> = {
+  unfunded: "sigs ok · unfunded",
+  executed: "sim passed",
+  broadcast: "on chain",
+};
+
+export function Badge({ value, className }: { value: string; className?: string }) {
   return (
-    <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium tracking-wide", tones[value] ?? "bg-panel-2 text-ink")}>
-      {value}
+    <span
+      className={cn(
+        "nums inline-flex items-center rounded-sm border px-1.5 py-0.5 text-[0.625rem] uppercase tracking-[0.12em]",
+        tones[value] ?? "border-line-strong text-ink",
+        className,
+      )}
+    >
+      {labels[value] ?? value.replace(/_/g, " ")}
     </span>
   );
 }

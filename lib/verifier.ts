@@ -2,7 +2,7 @@ import { INTENTS_CONTRACT } from "./assets";
 import type { SignedIntent } from "./types";
 
 function rpcUrls(): string[] {
-  const urls = [process.env.NEAR_RPC_URL, "https://rpc.mainnet.near.org", "https://rpc.fastnear.com"].filter(
+  const urls = [process.env.NEAR_RPC_URL, "https://rpc.fastnear.com", "https://rpc.mainnet.near.org"].filter(
     (value): value is string => Boolean(value),
   );
   return [...new Set(urls)];
