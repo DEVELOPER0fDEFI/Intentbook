@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpRight, KeyRound, Loader2 } from "lucide-react";
+import { ArrowUpRight, KeyRound, Loader2, LogOut } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useWallet, type WalletKind } from "@/components/wallet";
 import { Button } from "@/components/ui/button";
@@ -94,11 +94,18 @@ export function WalletDialog({ trigger }: { trigger: ReactNode }) {
           <a href={nearblocksAccount(session.accountId)} target="_blank" rel="noreferrer" className="nums text-xs text-muted hover:text-ink">
             {KIND_LABEL[session.kind]} · {shortAccount(session.accountId)} ↗︎
           </a>
-          {named ? (
-            <Button size="sm" variant="outline" disabled={wallet.busy} onClick={() => void wallet.registerNearKey()}>
-              <KeyRound className="size-3.5" /> Register key on intents.near
-            </Button>
-          ) : null}
+          <div className="flex flex-wrap gap-2">
+            {named ? (
+              <Button size="sm" variant="outline" disabled={wallet.busy} onClick={() => void wallet.registerNearKey()}>
+                <KeyRound className="size-3.5" /> Register key on intents.near
+              </Button>
+            ) : null}
+            {session.kind !== "demo" ? (
+              <Button size="sm" variant="ghost" disabled={wallet.busy} onClick={() => void wallet.disconnect()}>
+                <LogOut className="size-3.5" /> Disconnect
+              </Button>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </Dialog>

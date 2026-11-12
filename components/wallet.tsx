@@ -37,6 +37,8 @@ interface WalletApi {
   connectNear: () => Promise<void>;
   connectEvm: () => Promise<void>;
   connectSolana: () => Promise<void>;
+  /** Signs out of the current wallet and returns to the demo key. */
+  disconnect: () => Promise<void>;
   registerNearKey: () => Promise<void>;
   useDemo: () => void;
   signLeg: (leg: SignLeg) => Promise<SignedIntent>;
@@ -58,6 +60,61 @@ type NearWallet = {
 };
 
 let nearWallet: NearWallet | null = null;
+
+type Eip1193 = {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+  isMetaMask?: boolean;
+  isPhantom?: boolean;
+  providers?: Eip1193[];
+};
+
+type SolanaKey = { toBytes: () => Uint8Array; toString: () => string };
+
+type PhantomSolana = {
+  isPhantom?: boolean;
+  isConnected?: boolean;
+  publicKey?: SolanaKey | null;
+  connect: (options?: { onlyIfTrusted?: boolean }) => Promise<{ publicKey: SolanaKey }>;
+  disconnect?: () => Promise<void>;
+  signMessage: (message: Uint8Array, display: string) => Promise<{ signature: Uint8Array }>;
+};
+
+let evmProvider: Eip1193 | null = null;
+
+/**
+ * Finds MetaMask specifically. Phantom, Coinbase and Rabby also inject window.ethereum,
+ * so ask wallets to announce themselves (EIP-6963) and pick MetaMask by its rdns.
+ */
+async function findEvmProvider(): Promise<Eip1193 | null> {
+  if (evmProvider) return evmProvider;
+  const announced: { info?: { rdns?: string; name?: string }; provider: Eip1193 }[] = [];
+  const onAnnounce = (event: Event) => announced.push((event as CustomEvent).detail);
+  window.addEventListener("eip6963:announceProvider", onAnnounce);
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  window.removeEventListener("eip6963:announceProvider", onAnnounce);
+  const metamask =
+    announced.find((item) => item.info?.rdns === "io.metamask") ?? announced.find((item) => /metamask/i.test(item.info?.name ?? ""));
+  const injected = (window as unknown as { ethereum?: Eip1193 }).ethereum;
+  evmProvider =
+    metamask?.provider ??
+    injected?.providers?.find((item) => item.isMetaMask && !item.isPhantom) ??
+    (injected?.isMetaMask && !injected.isPhantom ? injected : null) ??
+    announced[0]?.provider ??
+    injected ??
+    null;
+  return evmProvider;
+}
+
+/** Phantom's own Solana provider. window.solana can belong to another wallet. */
+function findPhantom(): PhantomSolana | null {
+  const w = window as unknown as { phantom?: { solana?: PhantomSolana }; solana?: PhantomSolana };
+  return w.phantom?.solana ?? (w.solana?.isPhantom ? w.solana : null);
+}
+
+function hexOf(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 export interface NearCall {
   receiverId: string;
@@ -83,16 +140,27 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const parsed = savedRaw ? (JSON.parse(savedRaw) as WalletSession) : null;
       // Sessions from older builds (such as the removed passkey wallet) fall back to the demo key.
       const saved = parsed && ["demo", "near", "evm", "solana"].includes(parsed.kind) ? parsed : null;
-      const ethereum = (window as unknown as { ethereum?: { request: (args: { method: string }) => Promise<string[]> } }).ethereum;
-      if (ethereum && (!saved || saved.kind === "evm")) {
+      if (saved?.kind === "evm") {
         try {
-          const accounts = await ethereum.request({ method: "eth_accounts" });
+          const ethereum = await findEvmProvider();
+          const accounts = ((await ethereum?.request({ method: "eth_accounts" })) ?? []) as string[];
           if (accounts[0]) {
-            remember({ kind: "evm", accountId: accounts[0] });
+            remember({ kind: "evm", accountId: accounts[0].toLowerCase() });
             return;
           }
         } catch {
-          // MetaMask is not connected.
+          // MetaMask is locked or not connected. Fall back below.
+        }
+      }
+      if (saved?.kind === "solana") {
+        try {
+          const connected = await findPhantom()?.connect({ onlyIfTrusted: true });
+          if (connected && hexOf(connected.publicKey.toBytes()) === saved.accountId) {
+            setSession(saved);
+            return;
+          }
+        } catch {
+          // Phantom needs the user to approve again. Fall back below.
         }
       }
       if (!saved || saved.kind === "near") {
@@ -118,10 +186,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           // No NEAR session to restore.
         }
       }
-      if (saved) {
-        setSession(saved);
-        return;
-      }
+      // Anything that could not be restored (a locked MetaMask, an unapproved Phantom) falls back to the demo key.
       setSession({ kind: "demo", accountId: demo.accountId });
     })();
   }, []);
@@ -178,12 +243,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setBusy(true);
     setError("");
     try {
-      const ethereum = (window as unknown as { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
-      if (!ethereum) throw new Error("MetaMask is not available in this browser");
+      const ethereum = await findEvmProvider();
+      if (!ethereum) throw new Error("MetaMask is not installed in this browser");
       const accounts = (await ethereum.request({ method: "eth_requestAccounts" })) as string[];
       const accountId = accounts[0];
       if (!accountId) throw new Error("MetaMask did not return an account");
-      remember({ kind: "evm", accountId });
+      remember({ kind: "evm", accountId: accountId.toLowerCase() });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not connect MetaMask");
     } finally {
@@ -195,12 +260,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setBusy(true);
     setError("");
     try {
-      const provider = (window as unknown as { solana?: { connect: () => Promise<{ publicKey: { toBytes: () => Uint8Array; toString: () => string } }> } }).solana;
-      if (!provider) throw new Error("Phantom is not available in this browser");
+      const provider = findPhantom();
+      if (!provider) throw new Error("Phantom is not installed in this browser");
       const connected = await provider.connect();
-      const bytes = connected.publicKey.toBytes();
-      const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-      remember({ kind: "solana", accountId: hex, publicKey: `ed25519:${connected.publicKey.toString()}` });
+      remember({ kind: "solana", accountId: hexOf(connected.publicKey.toBytes()), publicKey: `ed25519:${connected.publicKey.toString()}` });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not connect Phantom");
     } finally {
@@ -230,6 +293,20 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function disconnect() {
+    try {
+      if (session?.kind === "near" && nearWallet && "signOut" in nearWallet) {
+        await (nearWallet as unknown as { signOut: () => Promise<void> }).signOut();
+      }
+      if (session?.kind === "solana") await findPhantom()?.disconnect?.();
+    } catch {
+      // Signing out of the wallet is best effort. The session is cleared either way.
+    }
+    const demo = loadDemoKey();
+    nearWallet = null;
+    remember({ kind: "demo", accountId: demo.accountId });
   }
 
   function useDemo() {
@@ -263,8 +340,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
     if (session.kind === "solana") {
       if (leg.standard !== "raw_ed25519") throw new Error("Phantom signs raw_ed25519 payloads. Review the order again.");
-      const provider = (window as unknown as { solana?: { signMessage: (message: Uint8Array, display: string) => Promise<{ signature: Uint8Array }> } }).solana;
-      if (!provider) throw new Error("Reconnect Phantom before signing");
+      const provider = findPhantom();
+      if (!provider) throw new Error("Phantom is not installed in this browser");
+      const current = provider.isConnected && provider.publicKey ? provider.publicKey : (await provider.connect()).publicKey;
+      if (hexOf(current.toBytes()) !== session.accountId) {
+        throw new Error("Phantom is on a different account now. Choose Phantom again in Connect.");
+      }
       const signed = await provider.signMessage(new TextEncoder().encode(leg.message), "utf8");
       const bs58mod = await import("bs58");
       return {
@@ -274,8 +355,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         signature: `ed25519:${bs58mod.default.encode(signed.signature)}`,
       };
     }
-    const ethereum = (window as unknown as { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
-    if (!ethereum) throw new Error("MetaMask is not available");
+    const ethereum = await findEvmProvider();
+    if (!ethereum) throw new Error("MetaMask is not installed in this browser");
+    const active = ((await ethereum.request({ method: "eth_accounts" })) as string[]).map((item) => item.toLowerCase());
+    if (!active.includes(session.accountId.toLowerCase())) {
+      throw new Error("MetaMask is locked or on a different account. Unlock it, or choose MetaMask again in Connect.");
+    }
     const hex = `0x${[...new TextEncoder().encode(leg.message)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
     const signature = (await ethereum.request({ method: "personal_sign", params: [hex, session.accountId] })) as string;
     return packEthSignature(leg.message, signature);
@@ -305,6 +390,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     connectNear,
     connectEvm,
     connectSolana,
+    disconnect,
     registerNearKey,
     useDemo,
     signLeg,
